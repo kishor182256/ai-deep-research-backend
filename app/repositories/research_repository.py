@@ -1,12 +1,14 @@
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.research import (
+    ResearchEvidenceChunk,
     ResearchEvent,
     ResearchJob,
     ResearchPlan,
     ResearchReport,
+    ResearchSource,
     ResearchSuggestion,
     ResearchSuggestionBatch,
 )
@@ -176,6 +178,28 @@ class ResearchRepository:
         await self.session.flush()
         return report
 
+    async def replace_report(
+        self,
+        *,
+        job_id: str,
+        title: str,
+        summary: str,
+        content: str,
+        citation_count: int,
+        verification_score: float,
+        status: str,
+    ) -> ResearchReport:
+        await self.session.execute(delete(ResearchReport).where(ResearchReport.job_id == job_id))
+        return await self.create_report(
+            job_id=job_id,
+            title=title,
+            summary=summary,
+            content=content,
+            citation_count=citation_count,
+            verification_score=verification_score,
+            status=status,
+        )
+
     async def get_latest_report(self, job_id: str) -> ResearchReport | None:
         result = await self.session.execute(
             select(ResearchReport)
@@ -185,11 +209,95 @@ class ResearchRepository:
         )
         return result.scalar_one_or_none()
 
+    async def replace_sources(
+        self,
+        *,
+        job_id: str,
+        sources: list[dict[str, str | float | int | None]],
+    ) -> list[ResearchSource]:
+        await self.session.execute(delete(ResearchSource).where(ResearchSource.job_id == job_id))
+
+        source_models: list[ResearchSource] = []
+        for index, source in enumerate(sources):
+            source_model = ResearchSource(
+                job_id=job_id,
+                query=str(source["query"]),
+                title=str(source["title"]),
+                url=str(source["url"]),
+                domain=str(source["domain"]),
+                snippet=str(source["snippet"]) if source.get("snippet") else None,
+                score=float(source["score"]),
+                credibility_score=float(source["credibility_score"]),
+                freshness=str(source["freshness"]),
+                status=str(source["status"]),
+                rank=int(source.get("rank") or index + 1),
+            )
+            self.session.add(source_model)
+            source_models.append(source_model)
+
+        await self.session.flush()
+        return source_models
+
+    async def list_sources(self, job_id: str) -> list[ResearchSource]:
+        result = await self.session.execute(
+            select(ResearchSource)
+            .where(ResearchSource.job_id == job_id)
+            .order_by(ResearchSource.rank.asc(), ResearchSource.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def replace_evidence_chunks(
+        self,
+        *,
+        job_id: str,
+        chunks: list[dict[str, str | float | int | dict[str, str | int | float | None]]],
+    ) -> list[ResearchEvidenceChunk]:
+        await self.session.execute(
+            delete(ResearchEvidenceChunk).where(ResearchEvidenceChunk.job_id == job_id)
+        )
+
+        chunk_models: list[ResearchEvidenceChunk] = []
+        for index, chunk in enumerate(chunks):
+            chunk_model = ResearchEvidenceChunk(
+                job_id=job_id,
+                source_id=str(chunk["source_id"]),
+                claim=str(chunk["claim"]),
+                chunk_text=str(chunk["chunk_text"]),
+                relevance_score=float(chunk["relevance_score"]),
+                rank=int(chunk.get("rank") or index + 1),
+                metadata_=dict(chunk.get("metadata") or {}),
+            )
+            self.session.add(chunk_model)
+            chunk_models.append(chunk_model)
+
+        await self.session.flush()
+        return chunk_models
+
+    async def list_evidence_chunks(self, job_id: str) -> list[ResearchEvidenceChunk]:
+        result = await self.session.execute(
+            select(ResearchEvidenceChunk)
+            .where(ResearchEvidenceChunk.job_id == job_id)
+            .options(selectinload(ResearchEvidenceChunk.source))
+            .order_by(ResearchEvidenceChunk.rank.asc(), ResearchEvidenceChunk.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def mark_sources_extracted(self, *, job_id: str) -> None:
+        sources = await self.list_sources(job_id)
+        for source in sources:
+            source.status = "extracted"
+        await self.session.flush()
+
     async def get_job(self, job_id: str) -> ResearchJob | None:
         result = await self.session.execute(
             select(ResearchJob)
             .where(ResearchJob.id == job_id)
-            .options(selectinload(ResearchJob.events), selectinload(ResearchJob.suggestion))
+            .options(
+                selectinload(ResearchJob.events),
+                selectinload(ResearchJob.suggestion),
+                selectinload(ResearchJob.sources),
+                selectinload(ResearchJob.evidence_chunks),
+            )
         )
         return result.scalar_one_or_none()
 

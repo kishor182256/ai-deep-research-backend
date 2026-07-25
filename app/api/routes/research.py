@@ -10,11 +10,13 @@ from app.db.session import AsyncSessionLocal
 from app.db.session import get_db_session
 from app.orchestrator.research_orchestrator import ResearchOrchestrator
 from app.schemas.research import (
+    ResearchEvidenceChunkRead,
     ResearchEventRead,
     ResearchJobCreateFromSuggestion,
     ResearchJobRead,
     ResearchPlanRead,
     ResearchReportRead,
+    ResearchSourceRead,
     ResearchSuggestionRequest,
     ResearchSuggestionResponse,
 )
@@ -86,9 +88,20 @@ async def get_research_job_events(
     return await ResearchService(session).list_job_events(job_id)
 
 
-@router.get("/jobs/{job_id}/sources")
-async def get_research_job_sources(job_id: str) -> list[dict[str, str]]:
-    return []
+@router.get("/jobs/{job_id}/sources", response_model=list[ResearchSourceRead])
+async def get_research_job_sources(
+    job_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> list[ResearchSourceRead]:
+    return await ResearchService(session).list_sources(job_id)
+
+
+@router.get("/jobs/{job_id}/evidence", response_model=list[ResearchEvidenceChunkRead])
+async def get_research_job_evidence(
+    job_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> list[ResearchEvidenceChunkRead]:
+    return await ResearchService(session).list_evidence_chunks(job_id)
 
 
 @router.get("/jobs/{job_id}/plan", response_model=ResearchPlanRead)
@@ -107,9 +120,17 @@ async def get_research_job_report(
     return await ResearchService(session).get_report(job_id)
 
 
+@router.post("/jobs/{job_id}/report/regenerate", response_model=ResearchReportRead)
+async def regenerate_research_job_report(
+    job_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> ResearchReportRead:
+    return await ResearchService(session).regenerate_report(job_id)
+
+
 async def _stream_research_job_events(job_id: str) -> AsyncGenerator[str, None]:
     sent_event_ids: set[str] = set()
-    terminal_states = {"completed", "failed", "awaiting_search"}
+    terminal_states = {"completed", "failed"}
 
     while True:
         async with AsyncSessionLocal() as session:

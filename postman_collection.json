@@ -18,7 +18,7 @@
       }
     },
     {
-      "name": "Create Project",
+      "name": "User Flow 1 - Enter Topic And Get Top 10 Suggestions",
       "request": {
         "method": "POST",
         "header": [
@@ -29,30 +29,13 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"name\": \"AI Market Research\",\n  \"description\": \"Initial research project\"\n}"
-        },
-        "url": "{{base_url}}/projects"
-      }
-    },
-    {
-      "name": "Create Research Suggestions",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"topic\": \"electric vehicles in India\",\n  \"audience\": \"general\",\n  \"freshness\": \"latest\"\n}"
+          "raw": "{\n  \"topic\": \"electric vehicles in India\"\n}"
         },
         "url": "{{base_url}}/research/suggestions"
       }
     },
     {
-      "name": "Start Research Job From Suggestion",
+      "name": "User Flow 2 - Select One Suggestion And Auto Start Research",
       "request": {
         "method": "POST",
         "header": [
@@ -63,7 +46,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"project_id\": null,\n  \"suggestion_id\": \"replace-with-suggestion-id\",\n  \"budget_policy\": \"starter\"\n}"
+          "raw": "{\n  \"suggestion_id\": \"replace-with-suggestion-id\",\n  \"budget_policy\": \"starter\"\n}"
         },
         "url": "{{base_url}}/research/jobs/from-suggestion"
       }
@@ -117,10 +100,41 @@
       }
     },
     {
+      "name": "Get Research Job Evidence",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/research/jobs/replace-with-job-id/evidence"
+      }
+    },
+    {
       "name": "Get Research Job Report",
       "request": {
         "method": "GET",
         "url": "{{base_url}}/research/jobs/replace-with-job-id/report"
+      }
+    },
+    {
+      "name": "Regenerate Research Job Report",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/research/jobs/replace-with-job-id/report/regenerate"
+      }
+    },
+    {
+      "name": "Internal Optional - Create Project",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"AI Market Research\",\n  \"description\": \"Initial research project\"\n}"
+        },
+        "url": "{{base_url}}/projects"
       }
     },
     {

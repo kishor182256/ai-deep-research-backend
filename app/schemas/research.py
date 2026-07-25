@@ -71,3 +71,31 @@ class ResearchReportRead(BaseModel):
     citation_count: int
     verification_score: float
     status: str
+
+
+class ResearchSourceRead(BaseModel):
+    id: str
+    job_id: str
+    query: str
+    title: str
+    url: str
+    domain: str
+    snippet: str | None = None
+    score: float
+    credibility_score: float
+    freshness: str
+    status: str
+    rank: int
+
+
+class ResearchEvidenceChunkRead(BaseModel):
+    id: str
+    job_id: str
+    source_id: str
+    source_title: str
+    source_url: str
+    claim: str
+    chunk_text: str
+    relevance_score: float
+    rank: int
+    metadata: dict[str, str | int | float | None]

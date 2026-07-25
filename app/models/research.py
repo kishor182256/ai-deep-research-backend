@@ -52,6 +52,16 @@ class ResearchJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="ResearchEvent.created_at",
     )
+    sources: Mapped[list["ResearchSource"]] = relationship(
+        back_populates="job",
+        cascade="all, delete-orphan",
+        order_by="ResearchSource.rank",
+    )
+    evidence_chunks: Mapped[list["ResearchEvidenceChunk"]] = relationship(
+        back_populates="job",
+        cascade="all, delete-orphan",
+        order_by="ResearchEvidenceChunk.rank",
+    )
 
 
 class ResearchEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -86,3 +96,41 @@ class ResearchReport(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     citation_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     verification_score: Mapped[float] = mapped_column(Numeric(4, 2), default=0, nullable=False)
     status: Mapped[str] = mapped_column(default="draft_needs_sources", nullable=False)
+
+
+class ResearchSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "research_sources"
+
+    job_id: Mapped[str] = mapped_column(ForeignKey("research_jobs.id"), nullable=False)
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    domain: Mapped[str] = mapped_column(nullable=False)
+    snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
+    score: Mapped[float] = mapped_column(Numeric(4, 2), nullable=False)
+    credibility_score: Mapped[float] = mapped_column(Numeric(4, 2), nullable=False)
+    freshness: Mapped[str] = mapped_column(default="unknown", nullable=False)
+    status: Mapped[str] = mapped_column(default="discovered", nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    job: Mapped["ResearchJob"] = relationship(back_populates="sources")
+    evidence_chunks: Mapped[list["ResearchEvidenceChunk"]] = relationship(
+        back_populates="source",
+        cascade="all, delete-orphan",
+        order_by="ResearchEvidenceChunk.rank",
+    )
+
+
+class ResearchEvidenceChunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "research_evidence_chunks"
+
+    job_id: Mapped[str] = mapped_column(ForeignKey("research_jobs.id"), nullable=False)
+    source_id: Mapped[str] = mapped_column(ForeignKey("research_sources.id"), nullable=False)
+    claim: Mapped[str] = mapped_column(Text, nullable=False)
+    chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
+    relevance_score: Mapped[float] = mapped_column(Numeric(4, 2), nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    metadata_: Mapped[dict[str, str | int | float | None]] = mapped_column("metadata", JSON, default=dict, nullable=False)
+
+    job: Mapped["ResearchJob"] = relationship(back_populates="evidence_chunks")
+    source: Mapped["ResearchSource"] = relationship(back_populates="evidence_chunks")

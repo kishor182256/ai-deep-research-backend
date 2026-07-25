@@ -18,6 +18,46 @@ API docs:
 http://127.0.0.1:8001/docs
 ```
 
+## Normal User Flow
+
+The user does not create a project manually. The app flow is:
+
+```text
+Enter topic -> get top 10 suggestions -> select one suggestion -> research job runs automatically
+```
+
+Use these endpoints for normal testing:
+
+```text
+POST /api/v1/research/suggestions
+POST /api/v1/research/jobs/from-suggestion
+GET  /api/v1/research/jobs/{job_id}
+GET  /api/v1/research/jobs/{job_id}/events
+GET  /api/v1/research/jobs/{job_id}/sources
+GET  /api/v1/research/jobs/{job_id}/evidence
+GET  /api/v1/research/jobs/{job_id}/report
+POST /api/v1/research/jobs/{job_id}/report/regenerate
+```
+
+`/api/v1/projects` is optional/internal for future saved workspaces, teams, and history.
+
+Suggestion request body only needs a topic:
+
+```json
+{
+  "topic": "electric vehicles in India"
+}
+```
+
+The backend defaults are:
+
+```json
+{
+  "audience": "general",
+  "freshness": "latest"
+}
+```
+
 Or run the helper script:
 
 ```powershell

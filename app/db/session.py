@@ -6,7 +6,7 @@ from app.core.config import settings
 from app.db.base import Base
 from app.models import cost, project, research, telemetry
 
-engine = create_async_engine(settings.database_url, echo=settings.app_debug)
+engine = create_async_engine(settings.database_url, echo=settings.sql_echo)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 

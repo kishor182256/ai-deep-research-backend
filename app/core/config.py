@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     app_name: str = "AI Deep Research API"
     app_env: str = "development"
     app_debug: bool = True
+    sql_echo: bool = False
     api_prefix: str = "/api/v1"
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/docreader"
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
 
     openai_api_key: str | None = None
     tavily_api_key: str | None = None
+    enable_external_providers: bool = True
 
     default_model_provider: str = "openai"
     default_fast_model: str = "gpt-4.1-mini"
