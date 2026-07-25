@@ -62,6 +62,11 @@ class ResearchJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="ResearchEvidenceChunk.rank",
     )
+    verification_results: Mapped[list["ResearchVerification"]] = relationship(
+        back_populates="job",
+        cascade="all, delete-orphan",
+        order_by="ResearchVerification.created_at",
+    )
 
 
 class ResearchEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -96,6 +101,26 @@ class ResearchReport(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     citation_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     verification_score: Mapped[float] = mapped_column(Numeric(4, 2), default=0, nullable=False)
     status: Mapped[str] = mapped_column(default="draft_needs_sources", nullable=False)
+
+
+class ResearchVerification(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "research_verifications"
+
+    job_id: Mapped[str] = mapped_column(ForeignKey("research_jobs.id"), nullable=False)
+    status: Mapped[str] = mapped_column(default="pending", nullable=False)
+    score: Mapped[float] = mapped_column(Numeric(4, 2), default=0, nullable=False)
+    citation_coverage: Mapped[float] = mapped_column(Numeric(4, 2), default=0, nullable=False)
+    checked_claims: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    supported_claims: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    warning_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    warnings: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    unsupported_claims: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    quality_gate: Mapped[dict[str, str | int | float | bool]] = mapped_column(JSON, default=dict, nullable=False)
+    model_provider: Mapped[str] = mapped_column(default="deterministic", nullable=False)
+    model_name: Mapped[str] = mapped_column(default="citation-quality-gate-v1", nullable=False)
+    routing_reason: Mapped[str] = mapped_column(Text, nullable=False)
+
+    job: Mapped["ResearchJob"] = relationship(back_populates="verification_results")
 
 
 class ResearchSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):

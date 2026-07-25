@@ -114,6 +114,13 @@
       }
     },
     {
+      "name": "Developer Inspect - Get Research Verification",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/research/jobs/replace-with-job-id/verification"
+      }
+    },
+    {
       "name": "Regenerate Research Job Report",
       "request": {
         "method": "POST",

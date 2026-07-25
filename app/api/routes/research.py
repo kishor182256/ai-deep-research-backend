@@ -19,6 +19,7 @@ from app.schemas.research import (
     ResearchSourceRead,
     ResearchSuggestionRequest,
     ResearchSuggestionResponse,
+    ResearchVerificationRead,
 )
 from app.services.research_service import ResearchService
 from app.tasks.research_tasks import run_research_job
@@ -118,6 +119,14 @@ async def get_research_job_report(
     session: AsyncSession = Depends(get_db_session),
 ) -> ResearchReportRead:
     return await ResearchService(session).get_report(job_id)
+
+
+@router.get("/jobs/{job_id}/verification", response_model=ResearchVerificationRead)
+async def get_research_job_verification(
+    job_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> ResearchVerificationRead:
+    return await ResearchService(session).get_verification(job_id)
 
 
 @router.post("/jobs/{job_id}/report/regenerate", response_model=ResearchReportRead)

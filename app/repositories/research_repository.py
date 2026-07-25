@@ -11,6 +11,7 @@ from app.models.research import (
     ResearchSource,
     ResearchSuggestion,
     ResearchSuggestionBatch,
+    ResearchVerification,
 )
 
 
@@ -209,6 +210,80 @@ class ResearchRepository:
         )
         return result.scalar_one_or_none()
 
+    async def update_latest_report_verification_score(
+        self,
+        *,
+        job_id: str,
+        verification_score: float,
+    ) -> ResearchReport | None:
+        report = await self.get_latest_report(job_id)
+        if report is None:
+            return None
+
+        report.verification_score = verification_score
+        await self.session.flush()
+        return report
+
+    async def update_latest_report_content(
+        self,
+        *,
+        job_id: str,
+        content: str,
+    ) -> ResearchReport | None:
+        report = await self.get_latest_report(job_id)
+        if report is None:
+            return None
+
+        report.content = content
+        await self.session.flush()
+        return report
+
+    async def replace_verification(
+        self,
+        *,
+        job_id: str,
+        status: str,
+        score: float,
+        citation_coverage: float,
+        checked_claims: int,
+        supported_claims: int,
+        warning_count: int,
+        warnings: list[str],
+        unsupported_claims: list[str],
+        quality_gate: dict[str, str | int | float | bool],
+        model_provider: str,
+        model_name: str,
+        routing_reason: str,
+    ) -> ResearchVerification:
+        await self.session.execute(delete(ResearchVerification).where(ResearchVerification.job_id == job_id))
+        verification = ResearchVerification(
+            job_id=job_id,
+            status=status,
+            score=score,
+            citation_coverage=citation_coverage,
+            checked_claims=checked_claims,
+            supported_claims=supported_claims,
+            warning_count=warning_count,
+            warnings=warnings,
+            unsupported_claims=unsupported_claims,
+            quality_gate=quality_gate,
+            model_provider=model_provider,
+            model_name=model_name,
+            routing_reason=routing_reason,
+        )
+        self.session.add(verification)
+        await self.session.flush()
+        return verification
+
+    async def get_latest_verification(self, job_id: str) -> ResearchVerification | None:
+        result = await self.session.execute(
+            select(ResearchVerification)
+            .where(ResearchVerification.job_id == job_id)
+            .order_by(ResearchVerification.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def replace_sources(
         self,
         *,
@@ -297,6 +372,7 @@ class ResearchRepository:
                 selectinload(ResearchJob.suggestion),
                 selectinload(ResearchJob.sources),
                 selectinload(ResearchJob.evidence_chunks),
+                selectinload(ResearchJob.verification_results),
             )
         )
         return result.scalar_one_or_none()

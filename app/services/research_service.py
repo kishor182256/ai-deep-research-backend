@@ -12,9 +12,12 @@ from app.schemas.research import (
     ResearchSourceRead,
     ResearchSuggestion,
     ResearchSuggestionResponse,
+    ResearchVerificationRead,
 )
+from app.services.citation_guardrail_service import CitationGuardrailService
 from app.services.report_service import ReportService
 from app.services.suggestion_service import SuggestionService
+from app.services.verification_service import VerificationService
 
 
 class ResearchService:
@@ -156,6 +159,46 @@ class ResearchService:
 
         return self._report_to_schema(report)
 
+    async def get_verification(self, job_id: str) -> ResearchVerificationRead:
+        job = await self.repository.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research job not found")
+
+        verification = await self.repository.get_latest_verification(job_id)
+        if verification is None:
+            objective = job.suggestion.title if job.suggestion else f"Research job {job.id}"
+            report = await self.repository.get_latest_report(job_id)
+            evidence_chunks = await self.repository.list_evidence_chunks(job_id)
+            sources = await self.repository.list_sources(job_id)
+            guardrail_result = CitationGuardrailService().repair_report(
+                report=report,
+                evidence_chunks=evidence_chunks,
+            )
+            if report and guardrail_result.applied_count:
+                report = await self.repository.update_latest_report_content(
+                    job_id=job_id,
+                    content=guardrail_result.content,
+                ) or report
+                await self.repository.add_event(
+                    job_id=job_id,
+                    event_type="citation_guardrail_applied",
+                    status="completed",
+                    message=f"Added citations to {guardrail_result.applied_count} uncited report lines.",
+                )
+            verification_payload = VerificationService().verify(
+                objective=objective,
+                report=report,
+                evidence_chunks=evidence_chunks,
+                sources=sources,
+            )
+            verification = await self.repository.replace_verification(job_id=job_id, **verification_payload)
+            await self.repository.update_latest_report_verification_score(
+                job_id=job_id,
+                verification_score=float(verification_payload["score"]),
+            )
+
+        return self._verification_to_schema(verification)
+
     async def regenerate_report(self, job_id: str) -> ResearchReportRead:
         job = await self.repository.get_job(job_id)
         if job is None:
@@ -182,17 +225,64 @@ class ResearchService:
             evidence_chunks=evidence_chunks,
         )
         report = await self.repository.replace_report(job_id=job_id, **report_payload)
+        guardrail_result = CitationGuardrailService().repair_report(
+            report=report,
+            evidence_chunks=evidence_chunks,
+        )
+        if guardrail_result.applied_count:
+            report = await self.repository.update_latest_report_content(
+                job_id=job_id,
+                content=guardrail_result.content,
+            ) or report
+            await self.repository.add_event(
+                job_id=job_id,
+                event_type="citation_guardrail_applied",
+                status="completed",
+                message=f"Added citations to {guardrail_result.applied_count} uncited report lines.",
+            )
+        elif guardrail_result.unresolved_claims:
+            await self.repository.add_event(
+                job_id=job_id,
+                event_type="citation_guardrail_needs_review",
+                status="needs_review",
+                message=f"{len(guardrail_result.unresolved_claims)} report lines still need citation review.",
+            )
+        sources = await self.repository.list_sources(job_id)
+        verification_payload = VerificationService().verify(
+            objective=objective,
+            report=report,
+            evidence_chunks=evidence_chunks,
+            sources=sources,
+        )
+        await self.repository.replace_verification(job_id=job_id, **verification_payload)
+        await self.repository.update_latest_report_verification_score(
+            job_id=job_id,
+            verification_score=float(verification_payload["score"]),
+        )
         await self.repository.update_job_status(
             job_id=job_id,
             status="completed",
             progress=100,
-            current_step="report_generated",
+            current_step=(
+                "quality_gate_passed"
+                if verification_payload["status"] == "passed"
+                else "quality_gate_attention_required"
+            ),
         )
         await self.repository.add_event(
             job_id=job_id,
             event_type="report_regenerated",
             status="completed",
             message=f"Regenerated report with {report_payload['citation_count']} citations.",
+        )
+        await self.repository.add_event(
+            job_id=job_id,
+            event_type="verification_completed",
+            status="completed",
+            message=(
+                f"Regenerated report verification score: {verification_payload['score']} "
+                f"with citation coverage {verification_payload['citation_coverage']}."
+            ),
         )
         return self._report_to_schema(report)
 
@@ -206,6 +296,24 @@ class ResearchService:
             citation_count=report.citation_count,
             verification_score=float(report.verification_score),
             status=report.status,
+        )
+
+    def _verification_to_schema(self, verification: object) -> ResearchVerificationRead:
+        return ResearchVerificationRead(
+            id=verification.id,
+            job_id=verification.job_id,
+            status=verification.status,
+            score=float(verification.score),
+            citation_coverage=float(verification.citation_coverage),
+            checked_claims=verification.checked_claims,
+            supported_claims=verification.supported_claims,
+            warning_count=verification.warning_count,
+            warnings=verification.warnings,
+            unsupported_claims=verification.unsupported_claims,
+            quality_gate=verification.quality_gate,
+            model_provider=verification.model_provider,
+            model_name=verification.model_name,
+            routing_reason=verification.routing_reason,
         )
 
     async def _ensure_job_exists(self, job_id: str) -> None:

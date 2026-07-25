@@ -39,6 +39,18 @@ GET  /api/v1/research/jobs/{job_id}/report
 POST /api/v1/research/jobs/{job_id}/report/regenerate
 ```
 
+After report generation, the backend now runs a cost-free MVP verification pass:
+
+```text
+cited report -> citation guardrail auto-fix -> citation coverage check -> quality gate -> completed job
+```
+
+The frontend calls this automatically and renders the confidence result near the report citations:
+
+```text
+GET /api/v1/research/jobs/{job_id}/verification
+```
+
 `/api/v1/projects` is optional/internal for future saved workspaces, teams, and history.
 
 Suggestion request body only needs a topic:

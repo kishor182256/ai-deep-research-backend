@@ -73,6 +73,23 @@ class ResearchReportRead(BaseModel):
     status: str
 
 
+class ResearchVerificationRead(BaseModel):
+    id: str
+    job_id: str
+    status: str
+    score: float
+    citation_coverage: float
+    checked_claims: int
+    supported_claims: int
+    warning_count: int
+    warnings: list[str]
+    unsupported_claims: list[str]
+    quality_gate: dict[str, str | int | float | bool]
+    model_provider: str
+    model_name: str
+    routing_reason: str
+
+
 class ResearchSourceRead(BaseModel):
     id: str
     job_id: str

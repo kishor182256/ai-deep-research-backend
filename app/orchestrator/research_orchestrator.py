@@ -3,27 +3,39 @@ import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.research_repository import ResearchRepository
+from app.services.citation_guardrail_service import CitationGuardrailService
 from app.services.extraction_service import ExtractionService
 from app.services.planning_service import PlanningService
 from app.services.report_service import ReportService
 from app.services.search_service import SearchService
+from app.services.verification_service import VerificationService
 
 
 class ResearchOrchestrator:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.repository = ResearchRepository(session)
+        self.citation_guardrail_service = CitationGuardrailService()
         self.extraction_service = ExtractionService()
         self.planning_service = PlanningService()
         self.report_service = ReportService()
         self.search_service = SearchService()
+        self.verification_service = VerificationService()
 
     async def start(self, job_id: str) -> None:
         job = await self.repository.get_job(job_id)
         if job is None:
             return
 
-        if job.status not in {"queued", "awaiting_search", "awaiting_extraction", "awaiting_report", "failed"}:
+        runnable_statuses = {
+            "queued",
+            "awaiting_search",
+            "awaiting_extraction",
+            "awaiting_report",
+            "awaiting_verification",
+            "failed",
+        }
+        if job.status not in runnable_statuses:
             return
 
         objective = job.suggestion.title if job.suggestion else f"Research job {job.id}"
@@ -37,7 +49,10 @@ class ResearchOrchestrator:
         if job.status in {"queued", "awaiting_search", "awaiting_extraction", "failed"}:
             await self._run_extraction(job_id=job_id)
 
-        await self._run_report_generation(job_id=job_id, objective=objective)
+        if job.status in {"queued", "awaiting_search", "awaiting_extraction", "awaiting_report", "failed"}:
+            await self._run_report_generation(job_id=job_id, objective=objective)
+
+        await self._run_verification(job_id=job_id, objective=objective)
 
     async def _run_planning(self, *, job_id: str, objective: str) -> None:
         await self.repository.update_job_status(
@@ -205,11 +220,33 @@ class ResearchOrchestrator:
             objective=objective,
             evidence_chunks=evidence_chunks,
         )
-        await self.repository.replace_report(job_id=job_id, **report_payload)
+        report = await self.repository.replace_report(job_id=job_id, **report_payload)
+        guardrail_result = self.citation_guardrail_service.repair_report(
+            report=report,
+            evidence_chunks=evidence_chunks,
+        )
+        if guardrail_result.applied_count:
+            await self.repository.update_latest_report_content(
+                job_id=job_id,
+                content=guardrail_result.content,
+            )
+            await self.repository.add_event(
+                job_id=job_id,
+                event_type="citation_guardrail_applied",
+                status="completed",
+                message=f"Added citations to {guardrail_result.applied_count} uncited report lines.",
+            )
+        elif guardrail_result.unresolved_claims:
+            await self.repository.add_event(
+                job_id=job_id,
+                event_type="citation_guardrail_needs_review",
+                status="needs_review",
+                message=f"{len(guardrail_result.unresolved_claims)} report lines still need citation review.",
+            )
         await self.repository.update_job_status(
             job_id=job_id,
-            status="completed",
-            progress=100,
+            status="awaiting_verification",
+            progress=92,
             current_step="report_generated",
         )
         await self.repository.add_event(
@@ -217,5 +254,71 @@ class ResearchOrchestrator:
             event_type="report_generated",
             status="completed",
             message=f"Generated cited report with {report_payload['citation_count']} citations.",
+        )
+        await self.repository.add_event(
+            job_id=job_id,
+            event_type="verification_ready",
+            status="waiting",
+            message="VerificationAgent is ready to check citation coverage and quality.",
+        )
+        await self.session.commit()
+
+    async def _run_verification(self, *, job_id: str, objective: str) -> None:
+        await self.repository.update_job_status(
+            job_id=job_id,
+            status="running",
+            progress=96,
+            current_step="verifying_report",
+        )
+        await self.repository.add_event(
+            job_id=job_id,
+            event_type="verification_started",
+            status="running",
+            message="VerificationAgent started citation and quality checks.",
+        )
+        await self.session.commit()
+
+        await asyncio.sleep(0.2)
+
+        report = await self.repository.get_latest_report(job_id)
+        evidence_chunks = await self.repository.list_evidence_chunks(job_id)
+        sources = await self.repository.list_sources(job_id)
+        verification_payload = self.verification_service.verify(
+            objective=objective,
+            report=report,
+            evidence_chunks=evidence_chunks,
+            sources=sources,
+        )
+        await self.repository.replace_verification(job_id=job_id, **verification_payload)
+        await self.repository.update_latest_report_verification_score(
+            job_id=job_id,
+            verification_score=float(verification_payload["score"]),
+        )
+
+        current_step = (
+            "quality_gate_passed"
+            if verification_payload["status"] == "passed"
+            else "quality_gate_attention_required"
+        )
+        await self.repository.update_job_status(
+            job_id=job_id,
+            status="completed",
+            progress=100,
+            current_step=current_step,
+        )
+        await self.repository.add_event(
+            job_id=job_id,
+            event_type="verification_completed",
+            status="completed",
+            message=(
+                f"Verification completed with score {verification_payload['score']} "
+                f"and citation coverage {verification_payload['citation_coverage']}."
+            ),
+        )
+        await self.repository.add_event(
+            job_id=job_id,
+            event_type=f"quality_gate_{verification_payload['status']}",
+            status=str(verification_payload["status"]),
+            message=str(verification_payload["quality_gate"]["message"]),
         )
         await self.session.commit()
