@@ -1,0 +1,144 @@
+{
+  "info": {
+    "name": "AI Deep Research Backend",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8001/api/v1"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/health"
+      }
+    },
+    {
+      "name": "Create Project",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"AI Market Research\",\n  \"description\": \"Initial research project\"\n}"
+        },
+        "url": "{{base_url}}/projects"
+      }
+    },
+    {
+      "name": "Create Research Suggestions",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"topic\": \"electric vehicles in India\",\n  \"audience\": \"general\",\n  \"freshness\": \"latest\"\n}"
+        },
+        "url": "{{base_url}}/research/suggestions"
+      }
+    },
+    {
+      "name": "Start Research Job From Suggestion",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"project_id\": null,\n  \"suggestion_id\": \"replace-with-suggestion-id\",\n  \"budget_policy\": \"starter\"\n}"
+        },
+        "url": "{{base_url}}/research/jobs/from-suggestion"
+      }
+    },
+    {
+      "name": "Get Research Job",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/research/jobs/replace-with-job-id"
+      }
+    },
+    {
+      "name": "Run Research Job Manually",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/research/jobs/replace-with-job-id/run"
+      }
+    },
+    {
+      "name": "Get Research Job Events",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/research/jobs/replace-with-job-id/events"
+      }
+    },
+    {
+      "name": "Stream Research Job Events",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "text/event-stream"
+          }
+        ],
+        "url": "{{base_url}}/research/jobs/replace-with-job-id/events"
+      }
+    },
+    {
+      "name": "Get Research Job Plan",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/research/jobs/replace-with-job-id/plan"
+      }
+    },
+    {
+      "name": "Get Research Job Sources",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/research/jobs/replace-with-job-id/sources"
+      }
+    },
+    {
+      "name": "Get Research Job Report",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/research/jobs/replace-with-job-id/report"
+      }
+    },
+    {
+      "name": "Generate Content",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"source_report_id\": \"replace-with-report-id\",\n  \"platform\": \"youtube_shorts\",\n  \"language\": \"English\"\n}"
+        },
+        "url": "{{base_url}}/content/generate"
+      }
+    }
+  ]
+}
