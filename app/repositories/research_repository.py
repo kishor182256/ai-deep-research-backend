@@ -426,6 +426,34 @@ class ResearchRepository:
         await self.session.flush()
         return source_models
 
+    async def select_sources_for_job(
+        self,
+        *,
+        job_id: str,
+        source_ids: list[str],
+    ) -> list[ResearchSource]:
+        sources = await self.list_sources(job_id)
+        selected_ids = set(source_ids)
+        selected_sources: list[ResearchSource] = []
+
+        for source in sources:
+            if source.id in selected_ids:
+                source.status = "selected"
+                selected_sources.append(source)
+            else:
+                source.status = "excluded"
+
+        await self.session.flush()
+        return selected_sources
+
+    async def clear_report_outputs(self, *, job_id: str) -> None:
+        await self.session.execute(
+            delete(ResearchEvidenceChunk).where(ResearchEvidenceChunk.job_id == job_id)
+        )
+        await self.session.execute(delete(ResearchReport).where(ResearchReport.job_id == job_id))
+        await self.session.execute(delete(ResearchVerification).where(ResearchVerification.job_id == job_id))
+        await self.session.flush()
+
     async def clear_evidence_chunks(self, *, job_id: str) -> None:
         await self.session.execute(
             delete(ResearchEvidenceChunk).where(ResearchEvidenceChunk.job_id == job_id)
@@ -479,7 +507,8 @@ class ResearchRepository:
     async def mark_sources_extracted(self, *, job_id: str) -> None:
         sources = await self.list_sources(job_id)
         for source in sources:
-            source.status = "extracted"
+            if source.status in {"selected", "discovered"}:
+                source.status = "extracted"
         await self.session.flush()
 
     async def get_job(self, job_id: str) -> ResearchJob | None:

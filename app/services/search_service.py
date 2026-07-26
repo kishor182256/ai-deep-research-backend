@@ -132,7 +132,7 @@ class SearchService:
         if not topic or not selected:
             return []
 
-        target_count = min(10, max(8, query_count or settings.search_query_count))
+        target_count = min(6, max(4, query_count or settings.search_query_count))
         selected_slots = max(1, round(target_count * 0.6))
         supporting_slots = min(max(1, round(target_count * 0.3)), max(target_count - selected_slots - 1, 0))
         counter_slots = max(1, target_count - selected_slots - supporting_slots)
@@ -271,51 +271,76 @@ class SearchService:
         queries: list[str],
         max_sources: int,
     ) -> list[dict[str, str | float | int | None]]:
-        per_query_limit = max(2, min(4, max_sources // max(len(queries), 1)))
+        per_query_limit = min(5, max_sources)
         tasks = [
             asyncio.create_task(asyncio.to_thread(self._search_tavily_query, query=query, max_results=per_query_limit))
             for query in queries
         ]
-        done, pending = await asyncio.wait(
-            tasks,
-            timeout=settings.search_provider_timeout_seconds,
-            return_when=asyncio.ALL_COMPLETED,
-        )
+
+        sources: list[dict[str, str | float | int | None]] = []
+        task_queries = dict(zip(tasks, queries, strict=False))
+        pending = set(tasks)
+        deadline = asyncio.get_running_loop().time() + min(settings.search_provider_timeout_seconds, 4.5)
+
+        while pending and len(sources) < max_sources:
+            remaining_seconds = max(0.0, deadline - asyncio.get_running_loop().time())
+            if remaining_seconds <= 0:
+                break
+
+            done, pending = await asyncio.wait(
+                pending,
+                timeout=remaining_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                break
+
+            for task in done:
+                query = task_queries[task]
+                sources.extend(self._sources_from_tavily_task(task=task, query=query))
+                if len(sources) >= max_sources:
+                    break
+
         for task in pending:
             task.cancel()
         if pending:
             logger.warning("Tavily source discovery timed out with %s pending queries.", len(pending))
 
+        return sources
+
+    def _sources_from_tavily_task(
+        self,
+        *,
+        task: asyncio.Task,
+        query: str,
+    ) -> list[dict[str, str | float | int | None]]:
         sources: list[dict[str, str | float | int | None]] = []
-        task_queries = dict(zip(tasks, queries, strict=False))
-        for task in done:
-            query = task_queries[task]
-            try:
-                result = task.result()
-            except Exception as exc:
-                logger.warning("Tavily query failed; continuing with partial results.", exc_info=exc)
+        try:
+            result = task.result()
+        except Exception as exc:
+            logger.warning("Tavily query failed; continuing with partial results.", exc_info=exc)
+            return sources
+
+        for item in result.get("results", []):
+            url = str(item.get("url") or "")
+            title = str(item.get("title") or "").strip()
+            if not url or not title:
                 continue
 
-            for item in result.get("results", []):
-                url = str(item.get("url") or "")
-                title = str(item.get("title") or "").strip()
-                if not url or not title:
-                    continue
-
-                domain = self._domain_from_url(url)
-                sources.append(
-                    {
-                        "query": query,
-                        "title": title,
-                        "url": url,
-                        "domain": domain,
-                        "snippet": item.get("content"),
-                        "score": float(item.get("score") or 0.65),
-                        "credibility_score": self._credibility_score(domain=domain),
-                        "freshness": str(item.get("published_date") or "unknown"),
-                        "status": "discovered",
-                    }
-                )
+            domain = self._domain_from_url(url)
+            sources.append(
+                {
+                    "query": query,
+                    "title": title,
+                    "url": url,
+                    "domain": domain,
+                    "snippet": item.get("content"),
+                    "score": float(item.get("score") or 0.65),
+                    "credibility_score": self._credibility_score(domain=domain),
+                    "freshness": str(item.get("published_date") or "unknown"),
+                    "status": "discovered",
+                }
+            )
 
         return sources
 

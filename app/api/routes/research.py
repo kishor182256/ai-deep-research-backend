@@ -19,6 +19,7 @@ from app.schemas.research import (
     ResearchMemoryMatchRead,
     ResearchPlanRead,
     ResearchReportRead,
+    ResearchSourceSelectionRequest,
     ResearchSourceRead,
     ResearchSuggestionRequest,
     ResearchSuggestionResponse,
@@ -124,6 +125,22 @@ async def get_research_job_sources(
     return await ResearchService(session).list_sources(job_id)
 
 
+@router.post("/jobs/{job_id}/sources/select", response_model=ResearchJobRead)
+async def select_research_job_sources(
+    job_id: str,
+    payload: ResearchSourceSelectionRequest,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db_session),
+) -> ResearchJobRead:
+    job = await ResearchService(session).select_sources_for_job(
+        job_id=job_id,
+        source_ids=payload.source_ids,
+    )
+    await session.commit()
+    background_tasks.add_task(run_research_job, job_id)
+    return job
+
+
 @router.get("/jobs/{job_id}/evidence", response_model=list[ResearchEvidenceChunkRead])
 async def get_research_job_evidence(
     job_id: str,
@@ -198,7 +215,7 @@ async def regenerate_research_job_report(
 
 async def _stream_research_job_events(job_id: str) -> AsyncGenerator[str, None]:
     sent_event_ids: set[str] = set()
-    terminal_states = {"completed", "failed"}
+    terminal_states = {"completed", "failed", "awaiting_source_selection"}
 
     while True:
         async with AsyncSessionLocal() as session:

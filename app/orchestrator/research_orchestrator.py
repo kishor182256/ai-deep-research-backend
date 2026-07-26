@@ -54,6 +54,7 @@ class ResearchOrchestrator:
                 objective=objective,
                 selection_context=selection_context,
             )
+            return
 
         if job.status in {"queued", "awaiting_search", "awaiting_extraction", "failed"}:
             await self._run_extraction(job_id=job_id)
@@ -388,9 +389,9 @@ class ResearchOrchestrator:
         )
         await self.repository.update_job_status(
             job_id=job_id,
-            status="awaiting_extraction",
+            status="awaiting_source_selection",
             progress=60,
-            current_step="sources_discovered",
+            current_step="source_selection_required",
         )
         await self.repository.add_event(
             job_id=job_id,
@@ -403,9 +404,9 @@ class ResearchOrchestrator:
         )
         await self.repository.add_event(
             job_id=job_id,
-            event_type="extraction_ready",
+            event_type="source_selection_required",
             status="waiting",
-            message="ExtractionAgent is the next backend slice.",
+            message="Select the sources that ExtractionAgent should read.",
         )
         await self.session.commit()
 
@@ -424,14 +425,18 @@ class ResearchOrchestrator:
         )
         await self.session.commit()
 
-        sources = await self.repository.list_sources(job_id)
+        all_sources = await self.repository.list_sources(job_id)
+        selected_sources = [source for source in all_sources if source.status == "selected"]
+        sources = selected_sources or [
+            source for source in all_sources if source.status not in {"excluded"}
+        ]
         chunks = self.extraction_service.extract_chunks(sources=sources)
         await self.repository.replace_evidence_chunks(job_id=job_id, chunks=chunks)
         await self.cost_tracker_service.record_cost(
             repository=self.repository,
             job_id=job_id,
             category="extraction",
-            description=f"Extraction produced {len(chunks)} evidence chunks from {len(sources)} sources.",
+            description=f"Extraction produced {len(chunks)} evidence chunks from {len(sources)} selected sources.",
         )
         if chunks:
             await self.repository.mark_sources_extracted(job_id=job_id)

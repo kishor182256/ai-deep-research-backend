@@ -230,6 +230,67 @@ class ResearchService:
             for source in sources
         ]
 
+    async def select_sources_for_job(
+        self,
+        *,
+        job_id: str,
+        source_ids: list[str],
+    ) -> ResearchJobRead:
+        job = await self.repository.get_job_basic(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research job not found")
+        if job.status == "running":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This research job is already running. Please wait for it to finish.",
+            )
+
+        sources = await self.repository.list_sources(job_id)
+        if not sources:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Sources are not ready yet. Please wait for source discovery to finish.",
+            )
+
+        unique_source_ids = list(dict.fromkeys(source_ids))
+        available_ids = {source.id for source in sources}
+        if any(source_id not in available_ids for source_id in unique_source_ids):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please select only sources discovered for this research job.",
+            )
+
+        selected_sources = await self.repository.select_sources_for_job(
+            job_id=job_id,
+            source_ids=unique_source_ids,
+        )
+        if not selected_sources:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Select at least one source before continuing.",
+            )
+
+        await self.repository.clear_report_outputs(job_id=job_id)
+        updated_job = await self.repository.update_job_status(
+            job_id=job_id,
+            status="awaiting_extraction",
+            progress=65,
+            current_step="sources_selected",
+        )
+        await self.repository.add_event(
+            job_id=job_id,
+            event_type="sources_selected",
+            status="completed",
+            message=f"Selected {len(selected_sources)} source(s). ExtractionAgent will read only selected sources.",
+        )
+        await self.repository.add_event(
+            job_id=job_id,
+            event_type="extraction_ready",
+            status="waiting",
+            message="ExtractionAgent is ready to read selected sources.",
+        )
+        return self._job_to_schema(updated_job or job)
+
     async def list_evidence_chunks(self, job_id: str) -> list[ResearchEvidenceChunkRead]:
         await self._ensure_job_exists(job_id)
         chunks = await self.repository.list_evidence_chunks(job_id)
@@ -658,7 +719,15 @@ class ResearchService:
             return 0
 
         end_time = getattr(job, "updated_at", None)
-        if job.status in {"queued", "running", "awaiting_search", "awaiting_extraction", "awaiting_report", "awaiting_verification"}:
+        if job.status in {
+            "queued",
+            "running",
+            "awaiting_search",
+            "awaiting_source_selection",
+            "awaiting_extraction",
+            "awaiting_report",
+            "awaiting_verification",
+        }:
             end_time = datetime.now(UTC)
         if end_time is None:
             return 0
@@ -677,6 +746,8 @@ class ResearchService:
             "source_discovery_ready": "Preparing source discovery",
             "source_discovery": "Finding sources",
             "sources_discovered": "Sources discovered",
+            "source_selection_required": "Choose sources",
+            "sources_selected": "Sources selected",
             "extracting_evidence": "Extracting evidence",
             "evidence_extracted": "Evidence ready",
             "generating_report": "Writing cited report",
