@@ -10,6 +10,7 @@ from app.db.session import AsyncSessionLocal
 from app.db.session import get_db_session
 from app.orchestrator.research_orchestrator import ResearchOrchestrator
 from app.schemas.research import (
+    ResearchCostSummaryRead,
     ResearchEvidenceChunkRead,
     ResearchEventRead,
     ResearchJobCreateFromSuggestion,
@@ -22,7 +23,7 @@ from app.schemas.research import (
     ResearchVerificationRead,
 )
 from app.services.research_service import ResearchService
-from app.tasks.research_tasks import run_research_job
+from app.tasks.research_tasks import run_research_job, run_research_review
 
 router = APIRouter(prefix="/research", tags=["research"])
 
@@ -127,6 +128,26 @@ async def get_research_job_verification(
     session: AsyncSession = Depends(get_db_session),
 ) -> ResearchVerificationRead:
     return await ResearchService(session).get_verification(job_id)
+
+
+@router.get("/jobs/{job_id}/costs", response_model=ResearchCostSummaryRead)
+async def get_research_job_costs(
+    job_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> ResearchCostSummaryRead:
+    return await ResearchService(session).get_cost_summary(job_id)
+
+
+@router.post("/jobs/{job_id}/review", response_model=ResearchJobRead)
+async def review_research_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db_session),
+) -> ResearchJobRead:
+    job = await ResearchService(session).start_review(job_id)
+    await session.commit()
+    background_tasks.add_task(run_research_review, job_id)
+    return job
 
 
 @router.post("/jobs/{job_id}/report/regenerate", response_model=ResearchReportRead)

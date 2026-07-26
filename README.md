@@ -36,6 +36,7 @@ GET  /api/v1/research/jobs/{job_id}/events
 GET  /api/v1/research/jobs/{job_id}/sources
 GET  /api/v1/research/jobs/{job_id}/evidence
 GET  /api/v1/research/jobs/{job_id}/report
+POST /api/v1/research/jobs/{job_id}/review
 POST /api/v1/research/jobs/{job_id}/report/regenerate
 ```
 
@@ -45,10 +46,22 @@ After report generation, the backend now runs a cost-free MVP verification pass:
 cited report -> citation guardrail auto-fix -> citation coverage check -> quality gate -> completed job
 ```
 
+If the quality gate needs review, the frontend can trigger a stronger evidence pass:
+
+```text
+POST /api/v1/research/jobs/{job_id}/review
+```
+
 The frontend calls this automatically and renders the confidence result near the report citations:
 
 ```text
 GET /api/v1/research/jobs/{job_id}/verification
+```
+
+Developer cost visibility is also available for Postman inspection:
+
+```text
+GET /api/v1/research/jobs/{job_id}/costs
 ```
 
 `/api/v1/projects` is optional/internal for future saved workspaces, teams, and history.

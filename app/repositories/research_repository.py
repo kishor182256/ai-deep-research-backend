@@ -2,6 +2,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.telemetry import CostRecord, ModelCallLog
 from app.models.research import (
     ResearchEvidenceChunk,
     ResearchEvent,
@@ -313,6 +314,12 @@ class ResearchRepository:
         await self.session.flush()
         return source_models
 
+    async def clear_evidence_chunks(self, *, job_id: str) -> None:
+        await self.session.execute(
+            delete(ResearchEvidenceChunk).where(ResearchEvidenceChunk.job_id == job_id)
+        )
+        await self.session.flush()
+
     async def list_sources(self, job_id: str) -> list[ResearchSource]:
         result = await self.session.execute(
             select(ResearchSource)
@@ -382,5 +389,67 @@ class ResearchRepository:
             select(ResearchEvent)
             .where(ResearchEvent.job_id == job_id)
             .order_by(ResearchEvent.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def create_model_call_log(
+        self,
+        *,
+        job_id: str | None,
+        provider: str,
+        model: str,
+        task_type: str,
+        reason: str,
+        input_tokens: int,
+        output_tokens: int,
+        estimated_cost: float,
+    ) -> ModelCallLog:
+        log = ModelCallLog(
+            job_id=job_id,
+            provider=provider,
+            model=model,
+            task_type=task_type,
+            reason=reason,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            estimated_cost=estimated_cost,
+        )
+        self.session.add(log)
+        await self.session.flush()
+        return log
+
+    async def create_cost_record(
+        self,
+        *,
+        job_id: str | None,
+        category: str,
+        amount: float,
+        currency: str = "USD",
+        description: str | None = None,
+    ) -> CostRecord:
+        record = CostRecord(
+            job_id=job_id,
+            category=category,
+            amount=amount,
+            currency=currency,
+            description=description,
+        )
+        self.session.add(record)
+        await self.session.flush()
+        return record
+
+    async def list_model_call_logs(self, job_id: str) -> list[ModelCallLog]:
+        result = await self.session.execute(
+            select(ModelCallLog)
+            .where(ModelCallLog.job_id == job_id)
+            .order_by(ModelCallLog.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def list_cost_records(self, job_id: str) -> list[CostRecord]:
+        result = await self.session.execute(
+            select(CostRecord)
+            .where(CostRecord.job_id == job_id)
+            .order_by(CostRecord.created_at.asc())
         )
         return list(result.scalars().all())

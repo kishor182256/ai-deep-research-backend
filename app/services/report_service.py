@@ -47,7 +47,9 @@ class ReportService:
     ) -> dict[str, str | int | float] | None:
         route = ModelRouter().route(task_type="report", query=objective)
         client = AsyncOpenAI(api_key=settings.openai_api_key)
-        evidence_text = self._evidence_prompt(evidence_chunks=evidence_chunks)
+        evidence_text = self._evidence_prompt(
+            evidence_chunks=evidence_chunks[: settings.report_generation_max_evidence_chunks]
+        )
 
         try:
             response = await client.chat.completions.create(
@@ -73,7 +75,7 @@ class ReportService:
                     },
                 ],
                 response_format={"type": "json_object"},
-                timeout=40,
+                timeout=settings.report_generation_timeout_seconds,
             )
         except Exception as exc:
             logger.warning("OpenAI report generation failed; using fallback.", exc_info=exc)
@@ -94,7 +96,7 @@ class ReportService:
             "title": generated.title.strip(),
             "summary": generated.summary.strip(),
             "content": generated.content.strip(),
-            "citation_count": len(evidence_chunks),
+            "citation_count": min(len(evidence_chunks), settings.report_generation_max_evidence_chunks),
             "verification_score": round(min(max(verification_score, 0), 1), 2),
             "status": "generated",
         }

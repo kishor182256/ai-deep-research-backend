@@ -116,3 +116,36 @@ class ResearchEvidenceChunkRead(BaseModel):
     relevance_score: float
     rank: int
     metadata: dict[str, str | int | float | None]
+
+
+class ModelCallLogRead(BaseModel):
+    id: str
+    job_id: str | None
+    provider: str
+    model: str
+    task_type: str
+    reason: str
+    input_tokens: int
+    output_tokens: int
+    estimated_cost: float
+
+
+class CostRecordRead(BaseModel):
+    id: str
+    job_id: str | None
+    category: str
+    amount: float
+    currency: str
+    description: str | None = None
+
+
+class ResearchCostSummaryRead(BaseModel):
+    job_id: str
+    total_estimated_cost: float
+    currency: str
+    model_call_count: int
+    tool_record_count: int
+    input_tokens: int
+    output_tokens: int
+    model_calls: list[ModelCallLogRead]
+    cost_records: list[CostRecordRead]

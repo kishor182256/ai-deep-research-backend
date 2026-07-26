@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 from dataclasses import dataclass
 from urllib.parse import quote_plus, urlparse
@@ -7,6 +8,8 @@ from tavily import TavilyClient
 
 from app.core.config import settings
 from app.services.model_router import ModelRoute, ModelRouter
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -21,9 +24,15 @@ class SearchService:
     def __init__(self) -> None:
         self.model_router = ModelRouter()
 
-    async def discover_sources(self, *, objective: str, max_sources: int = 10) -> SourceDiscoveryResult:
+    async def discover_sources(
+        self,
+        *,
+        objective: str,
+        max_sources: int = 10,
+        query_count: int | None = None,
+    ) -> SourceDiscoveryResult:
         route = self.model_router.route(task_type="query_generation", query=objective)
-        queries = self.generate_queries(objective=objective)
+        queries = self.generate_queries(objective=objective, query_count=query_count)
 
         if settings.tavily_api_key:
             sources = await self._search_tavily(queries=queries, max_sources=max_sources)
@@ -40,7 +49,7 @@ class SearchService:
                 route=route,
                 queries=queries,
                 sources=fallback_sources,
-                provider_status="tavily_empty_fallback",
+                provider_status="tavily_empty_or_timeout_fallback",
             )
 
         return SourceDiscoveryResult(
@@ -50,15 +59,16 @@ class SearchService:
             provider_status="provider_not_configured",
         )
 
-    def generate_queries(self, *, objective: str) -> list[str]:
+    def generate_queries(self, *, objective: str, query_count: int | None = None) -> list[str]:
         clean_objective = self._search_topic_from_objective(objective)
-        return [
+        queries = [
             clean_objective,
             f"{clean_objective} latest developments",
             f"{clean_objective} statistics data report",
             f"{clean_objective} expert analysis",
             f"{clean_objective} risks opportunities policy",
         ]
+        return queries[: query_count or settings.search_query_count]
 
     async def _search_tavily(
         self,
@@ -66,16 +76,29 @@ class SearchService:
         queries: list[str],
         max_sources: int,
     ) -> list[dict[str, str | float | int | None]]:
-        per_query_limit = max(2, min(5, max_sources // 2))
+        per_query_limit = max(2, min(4, max_sources // max(len(queries), 1)))
         tasks = [
-            asyncio.to_thread(self._search_tavily_query, query=query, max_results=per_query_limit)
+            asyncio.create_task(asyncio.to_thread(self._search_tavily_query, query=query, max_results=per_query_limit))
             for query in queries
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=settings.search_provider_timeout_seconds,
+            return_when=asyncio.ALL_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            logger.warning("Tavily source discovery timed out with %s pending queries.", len(pending))
 
         sources: list[dict[str, str | float | int | None]] = []
-        for query, result in zip(queries, results, strict=False):
-            if isinstance(result, Exception):
+        task_queries = dict(zip(tasks, queries, strict=False))
+        for task in done:
+            query = task_queries[task]
+            try:
+                result = task.result()
+            except Exception as exc:
+                logger.warning("Tavily query failed; continuing with partial results.", exc_info=exc)
                 continue
 
             for item in result.get("results", []):

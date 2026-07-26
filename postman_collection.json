@@ -121,6 +121,20 @@
       }
     },
     {
+      "name": "Developer Inspect - Get Research Costs",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/research/jobs/replace-with-job-id/costs"
+      }
+    },
+    {
+      "name": "Review Research Job For Stronger Evidence",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/research/jobs/replace-with-job-id/review"
+      }
+    },
+    {
       "name": "Regenerate Research Job Report",
       "request": {
         "method": "POST",

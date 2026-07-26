@@ -3,6 +3,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.research_repository import ResearchRepository
 from app.schemas.research import (
+    CostRecordRead,
+    ModelCallLogRead,
+    ResearchCostSummaryRead,
     ResearchEvidenceChunkRead,
     ResearchEventRead,
     ResearchJobRead,
@@ -15,6 +18,8 @@ from app.schemas.research import (
     ResearchVerificationRead,
 )
 from app.services.citation_guardrail_service import CitationGuardrailService
+from app.services.cost_tracker_service import CostTrackerService
+from app.services.model_router import ModelRoute
 from app.services.report_service import ReportService
 from app.services.suggestion_service import SuggestionService
 from app.services.verification_service import VerificationService
@@ -199,6 +204,50 @@ class ResearchService:
 
         return self._verification_to_schema(verification)
 
+    async def get_cost_summary(self, job_id: str) -> ResearchCostSummaryRead:
+        await self._ensure_job_exists(job_id)
+        model_calls = await self.repository.list_model_call_logs(job_id)
+        cost_records = await self.repository.list_cost_records(job_id)
+        total_estimated_cost = sum(float(log.estimated_cost) for log in model_calls) + sum(
+            float(record.amount) for record in cost_records
+        )
+
+        return ResearchCostSummaryRead(
+            job_id=job_id,
+            total_estimated_cost=round(total_estimated_cost, 6),
+            currency="USD",
+            model_call_count=len(model_calls),
+            tool_record_count=len(cost_records),
+            input_tokens=sum(log.input_tokens for log in model_calls),
+            output_tokens=sum(log.output_tokens for log in model_calls),
+            model_calls=[self._model_call_to_schema(log) for log in model_calls],
+            cost_records=[self._cost_record_to_schema(record) for record in cost_records],
+        )
+
+    async def start_review(self, job_id: str) -> ResearchJobRead:
+        job = await self.repository.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research job not found")
+        if job.status == "running":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This research job is already running. Please wait for it to finish.",
+            )
+
+        updated_job = await self.repository.update_job_status(
+            job_id=job_id,
+            status="running",
+            progress=max(job.progress, 80),
+            current_step="review_queued",
+        )
+        await self.repository.add_event(
+            job_id=job_id,
+            event_type="review_queued",
+            status="waiting",
+            message="ReviewAgent queued a stronger evidence pass.",
+        )
+        return self._job_to_schema(updated_job or job)
+
     async def regenerate_report(self, job_id: str) -> ResearchReportRead:
         job = await self.repository.get_job(job_id)
         if job is None:
@@ -247,12 +296,45 @@ class ResearchService:
                 status="needs_review",
                 message=f"{len(guardrail_result.unresolved_claims)} report lines still need citation review.",
             )
+        await CostTrackerService().record_model_call(
+            repository=self.repository,
+            job_id=job_id,
+            task_type="report_regeneration",
+            route=ModelRoute(
+                provider="report_service",
+                model=str(report_payload["status"]),
+                reason="Report regeneration completed; exact provider is determined inside ReportService.",
+            ),
+            input_text=objective,
+            output_text=report.content,
+        )
+        await CostTrackerService().record_cost(
+            repository=self.repository,
+            job_id=job_id,
+            category="citation_guardrail",
+            description=(
+                f"Citation guardrail added {guardrail_result.applied_count} citations during regeneration "
+                f"and left {len(guardrail_result.unresolved_claims)} claims for review."
+            ),
+        )
         sources = await self.repository.list_sources(job_id)
         verification_payload = VerificationService().verify(
             objective=objective,
             report=report,
             evidence_chunks=evidence_chunks,
             sources=sources,
+        )
+        await CostTrackerService().record_model_call(
+            repository=self.repository,
+            job_id=job_id,
+            task_type="verification",
+            route=ModelRoute(
+                provider=str(verification_payload["model_provider"]),
+                model=str(verification_payload["model_name"]),
+                reason=str(verification_payload["routing_reason"]),
+            ),
+            input_text=f"{objective}\n{report.content}",
+            output_text=str(verification_payload["quality_gate"]),
         )
         await self.repository.replace_verification(job_id=job_id, **verification_payload)
         await self.repository.update_latest_report_verification_score(
@@ -314,6 +396,29 @@ class ResearchService:
             model_provider=verification.model_provider,
             model_name=verification.model_name,
             routing_reason=verification.routing_reason,
+        )
+
+    def _model_call_to_schema(self, log: object) -> ModelCallLogRead:
+        return ModelCallLogRead(
+            id=log.id,
+            job_id=log.job_id,
+            provider=log.provider,
+            model=log.model,
+            task_type=log.task_type,
+            reason=log.reason,
+            input_tokens=log.input_tokens,
+            output_tokens=log.output_tokens,
+            estimated_cost=float(log.estimated_cost),
+        )
+
+    def _cost_record_to_schema(self, record: object) -> CostRecordRead:
+        return CostRecordRead(
+            id=record.id,
+            job_id=record.job_id,
+            category=record.category,
+            amount=float(record.amount),
+            currency=record.currency,
+            description=record.description,
         )
 
     async def _ensure_job_exists(self, job_id: str) -> None:
