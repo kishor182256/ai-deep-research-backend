@@ -118,6 +118,23 @@ class ResearchService:
             f"{getattr(suggestion, 'title', '')} {getattr(suggestion, 'reason', '')}"
             for suggestion in getattr(batch, "suggestions", [])
         ).lower()
+        suggestion_service = SuggestionService()
+        batch_topic = str(getattr(batch, "topic", "") or "")
+        cached_suggestions = [
+            {
+                "title": str(getattr(suggestion, "title", "")),
+                "summary": str(getattr(suggestion, "summary", "")),
+                "reason": str(getattr(suggestion, "reason", "")),
+                "score": float(getattr(suggestion, "score", 0) or 0),
+            }
+            for suggestion in getattr(batch, "suggestions", [])
+        ]
+        if (
+            suggestion_service._is_factual_outcome_query(batch_topic)
+            and suggestion_service._looks_like_background_learning(cached_suggestions)
+        ):
+            return True
+
         return any(phrase in titles_and_reasons for phrase in legacy_phrases)
 
     async def find_memory_matches(self, query: str) -> list[ResearchMemoryMatchRead]:

@@ -61,6 +61,15 @@ class GeneratedSuggestionListRead(BaseModel):
 class SuggestionService:
     async def generate(self, topic: str) -> list[dict[str, str | float]]:
         normalized_topic = " ".join(topic.strip().split())
+        if self._is_factual_outcome_query(normalized_topic):
+            if self._can_use_openai():
+                compact_suggestions = await self._generate_compact_suggestions_with_openai(topic=normalized_topic)
+                if compact_suggestions and not self._looks_like_background_learning(compact_suggestions):
+                    return compact_suggestions
+
+            logger.warning("Using factual outcome planner for result-style topic.")
+            return self._generate_local_pattern_suggestions(normalized_topic)
+
         if not self._can_use_openai():
             logger.warning("Topic Intelligence provider is not configured; using local pattern planner.")
             return self._generate_local_pattern_suggestions(normalized_topic)
@@ -191,7 +200,7 @@ class SuggestionService:
             "Do not produce research tasks yet. Do not search the web. Do not output SEO phrases, source names, "
             "websites, channels, universities, books, or generic outline categories unless the topic is specifically about them. "
             "Choose the best planning_pattern from: Process, Historical, System, Biological, Medical, Algorithm, Business, "
-            "Biography, Product, Country, Event, Scientific Theory, Legal, Political, Climate, Finance, General. "
+            "Biography, Product, Country, Event, Factual Result, Scientific Theory, Legal, Political, Climate, Finance, General. "
             "Concepts must be domain concepts, not report sections. Bad concepts: scope, timeline, evidence, examples, "
             "misconceptions, future outlook. Good concepts depend on the topic itself, such as qubits, SARS-CoV-2 transmission, "
             "crawling, indexing, ranking signals, subduction zones, or fiscal deficit."
@@ -234,6 +243,11 @@ class SuggestionService:
             "Generate exactly 10 topic-specific research suggestions in one step. "
             "Do not use a universal framework. Do not output generic headings like scope, foundations, process, timeline, "
             "evidence, examples, viewpoints, misconceptions, or future. "
+            "If the user asks for a factual result, outcome, completed event, match/series result, winner, scorecard, "
+            "award, election result, court decision, financial result, or launch outcome, do not create a learning path. "
+            "Create answer-oriented slots: final outcome, result table, winners/awards, key numbers, timeline, turning points, "
+            "standout performers/actors, official sources, reactions, implications, and disputed/uncertain details. "
+            "Do not suggest basic rules, definitions, rosters, or background unless the user directly asks for them. "
             "For a process topic, use concrete mechanisms and stages. For a system topic, use components and interactions. "
             "For an event topic, use causes, actors, mechanisms, spread, consequences, and lessons. Return JSON only."
         )
@@ -305,6 +319,9 @@ class SuggestionService:
 
     def _local_concepts_for_topic(self, *, topic: str, subject: str) -> list[dict[str, str]]:
         normalized = topic.lower()
+        if self._is_factual_outcome_query(topic):
+            return self._factual_outcome_concepts(topic=topic, subject=subject)
+
         for terms, concepts in self._specific_local_catalogs():
             if any(term in normalized for term in terms):
                 return [
@@ -314,6 +331,96 @@ class SuggestionService:
 
         return self._general_local_concepts(subject=subject)
 
+    def _factual_outcome_concepts(self, *, topic: str, subject: str) -> list[dict[str, str]]:
+        outcome_kind = self._factual_outcome_kind(topic)
+        if outcome_kind == "sports":
+            templates = [
+                ("Series or event winner and final result", "Find the confirmed winner, final scoreline/result margin, dates, venue context, and official result status.", "This answers the user's main factual question first."),
+                ("Match-by-match results and scorecards", "Collect each match/game result, scores, margins, venues, and links to official or high-trust scorecards.", "Result analysis needs a verified result table before commentary."),
+                ("Player of the Match, Player of the Series, and awards", "Identify all official awards or honors, including match-level and series/event-level recognition.", "Awards answer who had the highest recognized impact."),
+                ("Top batting, scoring, or offensive performers", "Analyze the leading run scorers, strike rates, partnerships, goal contributions, points, or equivalent attacking metrics.", "Performance claims should be backed by measurable output."),
+                ("Top bowling, defensive, or control performers", "Analyze wickets, economy, pressure spells, defensive actions, saves, or equivalent control metrics.", "Outcomes often depend on containment and pressure, not only scoring."),
+                ("Turning points that changed the result", "Identify collapses, partnerships, wickets, tactical changes, injuries, weather interruptions, or momentum shifts.", "This explains why the final result happened."),
+                ("Venue, conditions, and toss/context impact", "Check how ground, pitch, weather, toss, schedule, crowd, or travel conditions affected outcomes.", "Context helps separate skill from external conditions."),
+                ("Team selection, tactics, and decision analysis", "Compare lineups, substitutions, batting/bowling order, captaincy, strategy, and in-game choices.", "Tactical decisions often explain close results."),
+                ("Historical comparison and ranking implications", "Compare the result with previous meetings and check ranking, qualification, tournament, or future-series impact.", "The user needs to know whether the result was routine or significant."),
+                ("Source cross-check and disputed details", "Verify facts across official scorecards, governing bodies, trusted sports databases, and match reports.", "Recent sports data can be noisy, so final claims need confirmation."),
+            ]
+        elif outcome_kind == "election":
+            templates = [
+                ("Winner, final margin, and official result status", "Find the declared winner, vote/share margin, seat count, turnout, date, and whether the result is final or provisional.", "This answers the result question before interpretation."),
+                ("Constituency, region, or demographic result breakdown", "Collect result tables by region, constituency, bloc, demographic, or vote segment where available.", "Breakdowns explain where the result was won or lost."),
+                ("Key candidates, parties, campaigns, or alliances", "Identify the main contenders, campaign positions, alliances, endorsements, and leadership roles.", "Actors and coalitions shape the interpretation of election outcomes."),
+                ("Vote counts, turnout, swing, and seat changes", "Verify exact numbers, turnout, swing, vote share, seat gain/loss, and historical comparison metrics.", "Election analysis needs precise quantitative grounding."),
+                ("Decisive issues and campaign turning points", "Analyze events, debates, promises, scandals, turnout shifts, or local issues that changed the outcome.", "This explains why voters moved."),
+                ("Official election authority confirmation", "Prioritize election commission, official gazette, court, or government result pages.", "Official sources reduce result-reporting errors."),
+                ("Exit polls, forecasts, and result accuracy", "Compare pre-result expectations with the final outcome and explain major polling misses or confirmations.", "This reveals what surprised analysts."),
+                ("Reactions from winners, opponents, and institutions", "Collect concession speeches, victory statements, institutional responses, and expert commentary.", "Reactions show the political meaning of the result."),
+                ("Governance, policy, and power implications", "Assess what the result changes for leadership, lawmaking, policy, markets, or international relations.", "Users need to know what happens next."),
+                ("Disputes, recounts, legal challenges, and corrections", "Check if any result detail is contested, recounted, appealed, delayed, or later corrected.", "Election data can change after initial publication."),
+            ]
+        elif outcome_kind == "legal":
+            templates = [
+                ("Final ruling, verdict, or order", "Find the court's decision, legal outcome, date, bench/judge, parties, and current status.", "This answers the legal result before analysis."),
+                ("Case timeline and procedural history", "Build a concise timeline of filing, hearings, arguments, interim orders, judgment, and appeals.", "Legal outcomes depend on procedural context."),
+                ("Parties, claims, defenses, and legal questions", "Identify the litigants, charges/claims, defenses, statutory questions, and constitutional issues.", "The report must explain what the court was deciding."),
+                ("Key holdings and reasoning", "Extract the court's core reasoning, legal tests, precedent use, and decisive findings.", "Reasoning explains why the verdict happened."),
+                ("Evidence, documents, and record relied upon", "Identify the facts, filings, exhibits, witness points, or administrative record cited in the decision.", "Evidence grounds the legal analysis."),
+                ("Majority, dissent, concurrence, or separate opinions", "Check whether judges disagreed and summarize the practical difference between opinions.", "Split reasoning often affects future law."),
+                ("Immediate legal effect and compliance requirements", "Assess orders, penalties, injunctions, deadlines, enforcement, or obligations created by the decision.", "Users need the practical consequences."),
+                ("Appeal status and unresolved questions", "Check pending appeals, stays, remands, reviews, or open legal issues.", "A verdict may not be the final word."),
+                ("Expert and institutional reaction", "Compare analysis from legal experts, affected institutions, regulators, and credible legal media.", "Reaction clarifies significance without replacing the judgment."),
+                ("Source cross-check and citation trail", "Verify the result against official court documents, legal databases, and trusted reporting.", "Legal facts need precise source support."),
+            ]
+        elif outcome_kind == "finance":
+            templates = [
+                ("Reported result and headline financial metrics", "Find revenue, profit/loss, EPS, margins, growth, cash flow, and whether results beat or missed expectations.", "Financial analysis starts with the confirmed numbers."),
+                ("Segment, product, or geography breakdown", "Break down performance by business unit, product line, market, or region where available.", "Breakdowns explain what drove the result."),
+                ("Guidance, outlook, and management commentary", "Collect forward guidance, risk statements, capital allocation plans, and management explanations.", "Future expectations often matter as much as past results."),
+                ("Market reaction and valuation impact", "Analyze stock movement, analyst revisions, valuation changes, and investor response after the result.", "Markets reveal how the result was interpreted."),
+                ("Cost, margin, and operational drivers", "Identify cost changes, pricing, volume, utilization, supply chain, or productivity factors.", "Drivers explain why performance changed."),
+                ("Balance sheet, cash flow, and debt position", "Review liquidity, debt, free cash flow, working capital, buybacks, dividends, or capex.", "Headline profit can hide financial health issues."),
+                ("Comparison with analyst expectations and peers", "Compare actual results against estimates, prior quarters, prior year, and competitor performance.", "Context prevents overreading one number."),
+                ("Official filings, earnings release, and transcript", "Prioritize company filings, investor-relations material, exchange filings, and earnings-call transcripts.", "Primary sources reduce reporting noise."),
+                ("Risks, warnings, and disputed assumptions", "Check management risk factors, analyst concerns, accounting issues, or one-time adjustments.", "Result analysis should separate recurring performance from exceptions."),
+                ("What changes next for stakeholders", "Assess implications for investors, customers, employees, regulators, competitors, and future strategy.", "Users need actionable meaning."),
+            ]
+        elif outcome_kind == "launch":
+            templates = [
+                ("What launched and official availability", "Find the product, feature, event, release date, markets, pricing, eligibility, and official status.", "This answers what actually happened."),
+                ("Specifications, capabilities, and limitations", "Collect confirmed features, technical details, constraints, compatibility, and regional differences.", "Launch analysis needs precise capability data."),
+                ("How it compares with previous versions or competitors", "Compare the release against earlier versions, alternatives, and market expectations.", "Comparison reveals whether the launch is meaningful."),
+                ("Pricing, packaging, and business model", "Analyze price, subscriptions, tiers, bundles, enterprise options, and monetization strategy.", "Commercial impact depends on packaging."),
+                ("User, creator, developer, or customer impact", "Explain what changes for the target audience and what new workflows become possible.", "Users need practical implications."),
+                ("Official statements and technical documentation", "Prioritize product pages, release notes, documentation, developer blogs, and executive comments.", "Launch details can be misreported early."),
+                ("Early reviews, benchmarks, or real-world tests", "Collect credible first impressions, benchmarks, demos, limitations, and independent verification.", "External validation checks marketing claims."),
+                ("Market reaction and competitive response", "Track analyst reaction, customer response, competitor moves, and ecosystem impact.", "Launches matter through adoption and response."),
+                ("Risks, caveats, and unresolved questions", "Check privacy, safety, reliability, regulatory, performance, supply, or rollout uncertainties.", "Early launches often have hidden limitations."),
+                ("Next milestones and roadmap signals", "Identify promised updates, rollout phases, developer timelines, and future integration plans.", "This turns the launch result into forward-looking insight."),
+            ]
+        else:
+            templates = [
+                ("Final outcome and confirmed result", "Find the official result, winner/loser, decision, final status, date, location, and authority confirming it.", "This answers the user's factual question before analysis."),
+                ("Chronology of what happened", "Build a concise timeline of the key events, announcements, votes, decisions, releases, or result updates.", "Outcome analysis needs the order of events."),
+                ("Key people, organizations, or sides involved", "Identify the main actors, participants, institutions, campaigns, companies, courts, regulators, or teams.", "The report must explain who shaped the result."),
+                ("Result numbers, scorecard, vote count, or metrics", "Collect the exact quantitative result: score, margin, seats, votes, revenue, units, market move, or performance metric.", "Numbers anchor the analysis in verifiable facts."),
+                ("Awards, recognitions, or official designations", "Find named winners, finalists, rankings, player/person of the event, official honors, or equivalent recognition.", "Many factual-result queries require named award or status fields."),
+                ("Turning points and decisive causes", "Analyze the moments, decisions, incidents, evidence, campaigns, product choices, or market moves that changed the outcome.", "This explains why the result happened."),
+                ("Official statements and primary-source confirmation", "Collect official scorecards, regulator/court documents, company releases, election commissions, governing bodies, or organizers.", "Primary sources reduce hallucination risk."),
+                ("Expert/media reaction and interpretation", "Compare credible analysis from specialist outlets, analysts, experts, or post-event commentary.", "Reaction adds context without replacing facts."),
+                ("Implications and what changes next", "Assess rankings, policy impact, legal effect, market consequences, future fixtures, appeals, rematches, or next milestones.", "Users need the practical meaning of the result."),
+                ("Uncertainty, corrections, and disputed claims", "Check whether any result detail is provisional, corrected, appealed, disputed, or reported differently across sources.", "A factual report should flag unresolved details."),
+            ]
+
+        return [
+            {
+                "title": title,
+                "summary": f"{summary} Topic: {subject}.",
+                "reason": reason,
+            }
+            for title, summary, reason in templates
+        ]
+
     def _has_specific_local_pattern(self, topic: str) -> bool:
         normalized = topic.lower()
         return any(
@@ -321,6 +428,130 @@ class SuggestionService:
             for terms, _concepts in self._specific_local_catalogs()
             for term in terms
         )
+
+    def _is_factual_outcome_query(self, topic: str) -> bool:
+        normalized = f" {topic.lower()} "
+        outcome_terms = {
+            "result",
+            "results",
+            "winner",
+            "won",
+            "lost",
+            "beat",
+            "defeated",
+            "score",
+            "scorecard",
+            "final score",
+            "outcome",
+            "who win",
+            "who won",
+            "which team won",
+            "man of match",
+            "player of match",
+            "player of the match",
+            "player of series",
+            "player of the series",
+            "award",
+            "awards",
+            "election result",
+            "court decision",
+            "verdict",
+            "judgment",
+            "earnings result",
+            "financial result",
+            "quarter result",
+            "launch outcome",
+            "took place",
+            "held in",
+        }
+        event_terms = {
+            "series",
+            "match",
+            "odi",
+            "t20",
+            "test match",
+            "world cup",
+            "final",
+            "tournament",
+            "election",
+            "case",
+            "trial",
+            "hearing",
+            "earnings",
+            "quarter",
+            "event",
+            "launch",
+        }
+        has_outcome = any(term in normalized for term in outcome_terms)
+        has_event = any(term in normalized for term in event_terms)
+        has_year = bool(re.search(r"\b(?:19|20)\d{2}\b", normalized))
+        has_versus = bool(re.search(r"\b(vs|v|versus|against)\b", normalized))
+        return has_outcome and (has_event or has_year or has_versus)
+
+    def _factual_outcome_kind(self, topic: str) -> str:
+        normalized = f" {topic.lower()} "
+        if self._is_sports_or_competition_query(topic):
+            return "sports"
+        if any(term in normalized for term in {" election", " vote", " ballot", " turnout", " seat", " seats", " candidate", " poll "}):
+            return "election"
+        if any(term in normalized for term in {" court", " verdict", " judgment", " judgement", " ruling", " case", " trial", " hearing", " appeal", " lawsuit"}):
+            return "legal"
+        if any(term in normalized for term in {" earnings", " revenue", " profit", " eps", " quarter", " q1 ", " q2 ", " q3 ", " q4 ", " stock", " shares", " financial result"}):
+            return "finance"
+        if any(term in normalized for term in {" launch", " launched", " release", " released", " product event", " keynote", " announcement"}):
+            return "launch"
+        return "generic"
+
+    def _is_sports_or_competition_query(self, topic: str) -> bool:
+        normalized = f" {topic.lower()} "
+        sports_terms = {
+            "cricket",
+            "odi",
+            "t20",
+            "test match",
+            "football",
+            "soccer",
+            "tennis",
+            "hockey",
+            "kabaddi",
+            "basketball",
+            "baseball",
+            "series",
+            "match",
+            "scorecard",
+            "player of match",
+            "player of the match",
+            "man of match",
+            "player of series",
+            "player of the series",
+            "tournament",
+            "league",
+            "cup",
+            "final",
+        }
+        return any(term in normalized for term in sports_terms)
+
+    def _looks_like_background_learning(self, suggestions: list[dict[str, str | float]]) -> bool:
+        background_terms = {
+            "rules",
+            "format",
+            "basic",
+            "introduction",
+            "beginner",
+            "roster",
+            "squad",
+            "venue",
+            "pitch conditions",
+            "history of",
+            "overview",
+            "what is",
+            "how to play",
+        }
+        title_text = " ".join(str(suggestion.get("title", "")).lower() for suggestion in suggestions[:5])
+        summary_text = " ".join(str(suggestion.get("summary", "")).lower() for suggestion in suggestions[:5])
+        combined = f"{title_text} {summary_text}"
+        matches = sum(1 for term in background_terms if term in combined)
+        return matches >= 2
 
     def _specific_local_catalogs(self) -> list[tuple[set[str], list[tuple[str, str, str]]]]:
         return [

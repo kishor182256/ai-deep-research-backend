@@ -117,6 +117,14 @@ class SearchService:
                 return context_queries
 
         clean_objective = self._search_topic_from_objective(objective)
+        if self._is_factual_outcome_query(clean_objective):
+            return self._generate_factual_outcome_queries(
+                topic=clean_objective,
+                selected=[],
+                supporting=[],
+                target_count=query_count or settings.search_query_count,
+            )
+
         queries = self.plan_search_queries(research_dimension=clean_objective).flattened()
         return queries[: query_count or settings.search_query_count]
 
@@ -133,6 +141,14 @@ class SearchService:
             return []
 
         target_count = min(6, max(4, query_count or settings.search_query_count))
+        if self._is_factual_outcome_query(topic):
+            return self._generate_factual_outcome_queries(
+                topic=topic,
+                selected=selected,
+                supporting=supporting,
+                target_count=target_count,
+            )
+
         selected_slots = max(1, round(target_count * 0.6))
         supporting_slots = min(max(1, round(target_count * 0.3)), max(target_count - selected_slots - 1, 0))
         counter_slots = max(1, target_count - selected_slots - supporting_slots)
@@ -175,6 +191,80 @@ class SearchService:
             queries = self._dedupe_queries([*queries, *fallback_queries])
 
         return queries[:target_count]
+
+    def _generate_factual_outcome_queries(
+        self,
+        *,
+        topic: str,
+        selected: list[str],
+        supporting: list[str],
+        target_count: int,
+    ) -> list[str]:
+        outcome_kind = self._factual_outcome_kind(topic)
+        base_templates = [
+            "{topic} official final result outcome",
+            "{topic} result numbers metrics analysis",
+            "{topic} key people organizations result analysis",
+            "{topic} timeline turning points analysis",
+            "{topic} official statement primary source result",
+            "{topic} implications reaction disputed details",
+        ]
+        if outcome_kind == "sports":
+            base_templates = [
+                "{topic} scorecard result player of the match player of the series",
+                "{topic} official scorecard final result winner",
+                "{topic} match by match results scorecards",
+                "{topic} batting bowling stats top performers",
+                "{topic} turning points match report analysis",
+                "{topic} series result implications rankings",
+            ]
+        elif outcome_kind == "election":
+            base_templates = [
+                "{topic} official election result vote count seats margin",
+                "{topic} who won turnout constituency results",
+                "{topic} election commission official results",
+                "{topic} vote share swing demographic breakdown",
+                "{topic} campaign turning points result analysis",
+                "{topic} recount dispute concession victory speech",
+            ]
+        elif outcome_kind == "legal":
+            base_templates = [
+                "{topic} court verdict judgment ruling official order",
+                "{topic} case timeline parties legal issues",
+                "{topic} judgment reasoning holding dissent analysis",
+                "{topic} official court document order pdf",
+                "{topic} appeal status legal effect implications",
+                "{topic} expert legal analysis reaction",
+            ]
+        elif outcome_kind == "finance":
+            base_templates = [
+                "{topic} earnings release revenue profit EPS guidance",
+                "{topic} official filing investor relations transcript",
+                "{topic} results beat miss analyst expectations",
+                "{topic} segment performance margin cash flow analysis",
+                "{topic} stock market reaction analyst revisions",
+                "{topic} risks outlook management commentary",
+            ]
+        elif outcome_kind == "launch":
+            base_templates = [
+                "{topic} official launch announcement release notes",
+                "{topic} product specifications pricing availability",
+                "{topic} new features limitations comparison",
+                "{topic} early reviews benchmarks real world tests",
+                "{topic} market reaction competitive response",
+                "{topic} roadmap rollout next milestones",
+            ]
+
+        selected_queries = [
+            f"{topic} {title} official result data"
+            for title in selected[:3]
+        ]
+        supporting_queries = [
+            f"{topic} {title}"
+            for title in supporting[:2]
+        ]
+        queries = [template.format(topic=topic) for template in base_templates]
+        return self._dedupe_queries([*selected_queries, *queries, *supporting_queries])[:target_count]
 
     def _context_titles(self, value: object) -> list[str]:
         if not isinstance(value, list):
@@ -457,6 +547,108 @@ class SearchService:
         if title in excluded_titles:
             return True
         return score < 0.12
+
+    def _is_factual_outcome_query(self, topic: str) -> bool:
+        normalized = f" {topic.lower()} "
+        outcome_terms = {
+            "result",
+            "results",
+            "winner",
+            "won",
+            "lost",
+            "beat",
+            "defeated",
+            "score",
+            "scorecard",
+            "final score",
+            "outcome",
+            "who win",
+            "who won",
+            "which team won",
+            "man of match",
+            "player of match",
+            "player of the match",
+            "player of series",
+            "player of the series",
+            "award",
+            "awards",
+            "election result",
+            "court decision",
+            "verdict",
+            "judgment",
+            "earnings result",
+            "financial result",
+            "quarter result",
+            "launch outcome",
+            "took place",
+            "held in",
+        }
+        event_terms = {
+            "series",
+            "match",
+            "odi",
+            "t20",
+            "test match",
+            "world cup",
+            "final",
+            "tournament",
+            "election",
+            "case",
+            "trial",
+            "hearing",
+            "earnings",
+            "quarter",
+            "event",
+            "launch",
+        }
+        has_outcome = any(term in normalized for term in outcome_terms)
+        has_event = any(term in normalized for term in event_terms)
+        has_year = bool(re.search(r"\b(?:19|20)\d{2}\b", normalized))
+        has_versus = bool(re.search(r"\b(vs|v|versus|against)\b", normalized))
+        return has_outcome and (has_event or has_year or has_versus)
+
+    def _factual_outcome_kind(self, topic: str) -> str:
+        normalized = f" {topic.lower()} "
+        if self._is_sports_or_competition_query(topic):
+            return "sports"
+        if any(term in normalized for term in {" election", " vote", " ballot", " turnout", " seat", " seats", " candidate", " poll "}):
+            return "election"
+        if any(term in normalized for term in {" court", " verdict", " judgment", " judgement", " ruling", " case", " trial", " hearing", " appeal", " lawsuit"}):
+            return "legal"
+        if any(term in normalized for term in {" earnings", " revenue", " profit", " eps", " quarter", " q1 ", " q2 ", " q3 ", " q4 ", " stock", " shares", " financial result"}):
+            return "finance"
+        if any(term in normalized for term in {" launch", " launched", " release", " released", " product event", " keynote", " announcement"}):
+            return "launch"
+        return "generic"
+
+    def _is_sports_or_competition_query(self, topic: str) -> bool:
+        normalized = f" {topic.lower()} "
+        sports_terms = {
+            "cricket",
+            "odi",
+            "t20",
+            "test match",
+            "football",
+            "soccer",
+            "tennis",
+            "hockey",
+            "kabaddi",
+            "basketball",
+            "baseball",
+            "series",
+            "match",
+            "scorecard",
+            "player of match",
+            "player of the match",
+            "man of match",
+            "player of series",
+            "player of the series",
+            "tournament",
+            "league",
+            "cup",
+            "final",
+        }
+        return any(term in normalized for term in sports_terms)
 
     def _credibility_score(self, *, domain: str) -> float:
         high_trust_suffixes = (".gov", ".edu")
