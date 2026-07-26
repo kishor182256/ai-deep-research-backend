@@ -25,6 +25,7 @@ from app.services.citation_guardrail_service import CitationGuardrailService
 from app.services.cost_tracker_service import CostTrackerService
 from app.services.model_router import ModelRoute
 from app.services.report_service import ReportService
+from app.services.research_objective_service import ResearchObjectiveService
 from app.services.research_memory_service import ResearchMemoryService
 from app.services.suggestion_service import SuggestionService
 from app.services.verification_service import VerificationService
@@ -34,6 +35,7 @@ class ResearchService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.repository = ResearchRepository(session)
+        self.objective_service = ResearchObjectiveService()
 
     async def create_suggestions(
         self,
@@ -136,17 +138,54 @@ class ResearchService:
         project_id: str | None,
         budget_policy: str,
     ) -> ResearchJobRead:
-        suggestion = await self.repository.get_suggestion(suggestion_id)
-        if suggestion is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Research suggestion not found",
-            )
-
-        job = await self.repository.create_job_from_suggestion(
-            suggestion_id=suggestion_id,
+        return await self.create_job_from_suggestions(
+            suggestion_ids=[suggestion_id],
             project_id=project_id,
             budget_policy=budget_policy,
+        )
+
+    async def create_job_from_suggestions(
+        self,
+        *,
+        suggestion_ids: list[str],
+        project_id: str | None,
+        budget_policy: str,
+    ) -> ResearchJobRead:
+        unique_ids = list(dict.fromkeys(suggestion_ids))
+        suggestions = await self.repository.get_suggestions_by_ids(unique_ids)
+        if len(suggestions) != len(unique_ids):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="One or more selected research directions could not be found.",
+            )
+
+        batch_ids = {suggestion.batch_id for suggestion in suggestions}
+        if len(batch_ids) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please select research directions from the same top 10 suggestion batch.",
+            )
+
+        selected_suggestions = sorted(suggestions, key=lambda suggestion: suggestion.rank)
+        selected_ids = {suggestion.id for suggestion in selected_suggestions}
+        batch = selected_suggestions[0].batch
+        supporting_suggestions = [
+            suggestion
+            for suggestion in sorted(batch.suggestions, key=lambda item: item.rank)
+            if suggestion.id not in selected_ids
+        ][:4]
+        context = self.objective_service.build_selection_context(
+            topic=batch.topic,
+            selected_suggestions=selected_suggestions,
+            supporting_suggestions=supporting_suggestions,
+        )
+
+        job = await self.repository.create_job_from_suggestions(
+            primary_suggestion_id=selected_suggestions[0].id,
+            project_id=project_id,
+            budget_policy=budget_policy,
+            selection_context_message=self.objective_service.context_to_message(context),
+            selected_count=len(selected_suggestions),
         )
         return self._job_to_schema(job)
 
@@ -239,7 +278,7 @@ class ResearchService:
 
         verification = await self.repository.get_latest_verification(job_id)
         if verification is None:
-            objective = job.suggestion.title if job.suggestion else f"Research job {job.id}"
+            objective = self.objective_service.objective_from_job(job)
             report = await self.repository.get_latest_report(job_id)
             evidence_chunks = await self.repository.list_evidence_chunks(job_id)
             sources = await self.repository.list_sources(job_id)
@@ -361,7 +400,7 @@ class ResearchService:
         if job is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research job not found")
 
-        objective = job.suggestion.title if job.suggestion else f"Research job {job.id}"
+        objective = self.objective_service.objective_from_job(job)
         await self.repository.update_job_status(
             job_id=job_id,
             status="running",

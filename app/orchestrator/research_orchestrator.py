@@ -8,6 +8,7 @@ from app.services.extraction_service import ExtractionService
 from app.services.model_router import ModelRoute
 from app.services.planning_service import PlanningService
 from app.services.report_service import ReportService
+from app.services.research_objective_service import ResearchObjectiveService
 from app.services.search_service import SearchService
 from app.services.verification_service import VerificationService
 
@@ -21,6 +22,7 @@ class ResearchOrchestrator:
         self.extraction_service = ExtractionService()
         self.planning_service = PlanningService()
         self.report_service = ReportService()
+        self.objective_service = ResearchObjectiveService()
         self.search_service = SearchService()
         self.verification_service = VerificationService()
 
@@ -40,13 +42,18 @@ class ResearchOrchestrator:
         if job.status not in runnable_statuses:
             return
 
-        objective = job.suggestion.title if job.suggestion else f"Research job {job.id}"
+        selection_context = self.objective_service.context_from_job(job)
+        objective = self.objective_service.objective_from_job(job)
 
         if job.status in {"queued", "failed"}:
             await self._run_planning(job_id=job_id, objective=objective)
 
         if job.status in {"queued", "awaiting_search", "failed"}:
-            await self._run_source_discovery(job_id=job_id, objective=objective)
+            await self._run_source_discovery(
+                job_id=job_id,
+                objective=objective,
+                selection_context=selection_context,
+            )
 
         if job.status in {"queued", "awaiting_search", "awaiting_extraction", "failed"}:
             await self._run_extraction(job_id=job_id)
@@ -61,7 +68,8 @@ class ResearchOrchestrator:
         if job is None:
             return
 
-        objective = job.suggestion.title if job.suggestion else f"Research job {job.id}"
+        selection_context = self.objective_service.context_from_job(job)
+        objective = self.objective_service.objective_from_job(job)
         review_objective = f"{objective} authoritative recent evidence primary sources data"
 
         await self.repository.update_job_status(
@@ -82,6 +90,7 @@ class ResearchOrchestrator:
             objective=review_objective,
             max_sources=20,
             query_count=settings.review_search_query_count,
+            selection_context=selection_context,
         )
         await self.repository.clear_evidence_chunks(job_id=job_id)
         await self.repository.replace_sources(job_id=job_id, sources=discovery.sources)
@@ -329,7 +338,13 @@ class ResearchOrchestrator:
         )
         await self.session.commit()
 
-    async def _run_source_discovery(self, *, job_id: str, objective: str) -> None:
+    async def _run_source_discovery(
+        self,
+        *,
+        job_id: str,
+        objective: str,
+        selection_context: dict | None,
+    ) -> None:
         await self.repository.update_job_status(
             job_id=job_id,
             status="running",
@@ -347,6 +362,7 @@ class ResearchOrchestrator:
         discovery = await self.search_service.discover_sources(
             objective=objective,
             query_count=settings.search_query_count,
+            selection_context=selection_context,
         )
         await self.repository.replace_sources(job_id=job_id, sources=discovery.sources)
         await self.cost_tracker_service.record_model_call(

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import quote_plus, urlparse
 
 from tavily import TavilyClient
@@ -66,9 +67,14 @@ class SearchService:
         objective: str,
         max_sources: int = 10,
         query_count: int | None = None,
+        selection_context: dict[str, Any] | None = None,
     ) -> SourceDiscoveryResult:
         route = self.model_router.route(task_type="query_generation", query=objective)
-        queries = self.generate_queries(objective=objective, query_count=query_count)
+        queries = self.generate_queries(
+            objective=objective,
+            query_count=query_count,
+            selection_context=selection_context,
+        )
 
         if settings.tavily_api_key:
             sources = await self._search_tavily(queries=queries, max_sources=max_sources)
@@ -95,10 +101,123 @@ class SearchService:
             provider_status="provider_not_configured",
         )
 
-    def generate_queries(self, *, objective: str, query_count: int | None = None) -> list[str]:
+    def generate_queries(
+        self,
+        *,
+        objective: str,
+        query_count: int | None = None,
+        selection_context: dict[str, Any] | None = None,
+    ) -> list[str]:
+        if selection_context:
+            context_queries = self._generate_selection_context_queries(
+                selection_context=selection_context,
+                query_count=query_count,
+            )
+            if context_queries:
+                return context_queries
+
         clean_objective = self._search_topic_from_objective(objective)
         queries = self.plan_search_queries(research_dimension=clean_objective).flattened()
         return queries[: query_count or settings.search_query_count]
+
+    def _generate_selection_context_queries(
+        self,
+        *,
+        selection_context: dict[str, Any],
+        query_count: int | None,
+    ) -> list[str]:
+        topic = str(selection_context.get("topic") or "").strip()
+        selected = self._context_titles(selection_context.get("selected_directions"))
+        supporting = self._context_titles(selection_context.get("supporting_directions"))
+        if not topic or not selected:
+            return []
+
+        target_count = min(10, max(8, query_count or settings.search_query_count))
+        selected_slots = max(1, round(target_count * 0.6))
+        supporting_slots = min(max(1, round(target_count * 0.3)), max(target_count - selected_slots - 1, 0))
+        counter_slots = max(1, target_count - selected_slots - supporting_slots)
+
+        selected_queries = self._weighted_queries(
+            topic=topic,
+            titles=selected,
+            templates=[
+                "{topic} {title} evidence",
+                "{topic} {title} primary sources",
+                "{topic} {title} data research",
+                "{topic} {title} expert analysis",
+            ],
+            limit=selected_slots,
+        )
+        supporting_queries = self._weighted_queries(
+            topic=topic,
+            titles=supporting,
+            templates=[
+                "{topic} {title} background",
+                "{topic} {title} supporting evidence",
+                "{topic} {title} explanation",
+            ],
+            limit=supporting_slots,
+        )
+        counter_queries = self._weighted_queries(
+            topic=topic,
+            titles=selected,
+            templates=[
+                "{topic} {title} criticism debate",
+                "{topic} {title} limitations uncertainty",
+                "{topic} {title} contradictory evidence",
+            ],
+            limit=counter_slots,
+        )
+
+        queries = self._dedupe_queries([*selected_queries, *supporting_queries, *counter_queries])
+        if len(queries) < target_count:
+            fallback_queries = self.plan_search_queries(research_dimension=f"{topic} {selected[0]}").flattened()
+            queries = self._dedupe_queries([*queries, *fallback_queries])
+
+        return queries[:target_count]
+
+    def _context_titles(self, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+
+        titles: list[str] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            if title:
+                titles.append(title)
+        return titles
+
+    def _weighted_queries(
+        self,
+        *,
+        topic: str,
+        titles: list[str],
+        templates: list[str],
+        limit: int,
+    ) -> list[str]:
+        queries: list[str] = []
+        if limit <= 0 or not titles:
+            return queries
+
+        for template in templates:
+            for title in titles:
+                queries.append(template.format(topic=topic, title=title))
+                if len(queries) >= limit:
+                    return queries
+        return queries[:limit]
+
+    def _dedupe_queries(self, queries: list[str]) -> list[str]:
+        unique_queries: list[str] = []
+        seen: set[str] = set()
+        for query in queries:
+            clean_query = " ".join(query.split()).strip()
+            normalized = clean_query.lower()
+            if clean_query and normalized not in seen:
+                unique_queries.append(clean_query)
+                seen.add(normalized)
+        return unique_queries
 
     def plan_search_queries(self, *, research_dimension: str) -> SearchPlan:
         dimension = " ".join(research_dimension.split()).strip(" ?")

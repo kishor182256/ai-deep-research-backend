@@ -32,6 +32,12 @@ class ResearchJobCreateFromSuggestion(BaseModel):
     budget_policy: str = "starter"
 
 
+class ResearchJobCreateFromSuggestions(BaseModel):
+    project_id: str | None = None
+    suggestion_ids: list[str] = Field(min_length=1, max_length=10)
+    budget_policy: str = "starter"
+
+
 class ResearchJobRead(BaseModel):
     id: str
     project_id: str | None = None

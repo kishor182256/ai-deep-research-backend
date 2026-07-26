@@ -97,6 +97,27 @@ class ResearchRepository:
     async def get_suggestion(self, suggestion_id: str) -> ResearchSuggestion | None:
         return await self.session.get(ResearchSuggestion, suggestion_id)
 
+    async def get_suggestions_by_ids(self, suggestion_ids: list[str]) -> list[ResearchSuggestion]:
+        if not suggestion_ids:
+            return []
+
+        result = await self.session.execute(
+            select(ResearchSuggestion)
+            .where(ResearchSuggestion.id.in_(suggestion_ids))
+            .options(
+                selectinload(ResearchSuggestion.batch).selectinload(
+                    ResearchSuggestionBatch.suggestions
+                )
+            )
+        )
+        suggestions = list(result.scalars().all())
+        suggestions_by_id = {suggestion.id: suggestion for suggestion in suggestions}
+        return [
+            suggestions_by_id[suggestion_id]
+            for suggestion_id in suggestion_ids
+            if suggestion_id in suggestions_by_id
+        ]
+
     async def create_job_from_suggestion(
         self,
         *,
@@ -121,6 +142,53 @@ class ResearchRepository:
                 type="job_created",
                 status="queued",
                 message="Research job created from selected suggestion.",
+            )
+        )
+        self.session.add(
+            ResearchEvent(
+                job_id=job.id,
+                type="plan_pending",
+                status="waiting",
+                message="Research planner is waiting to run.",
+            )
+        )
+        await self.session.flush()
+        return job
+
+    async def create_job_from_suggestions(
+        self,
+        *,
+        primary_suggestion_id: str,
+        project_id: str | None,
+        budget_policy: str,
+        selection_context_message: str,
+        selected_count: int,
+    ) -> ResearchJob:
+        job = ResearchJob(
+            project_id=project_id,
+            suggestion_id=primary_suggestion_id,
+            budget_policy=budget_policy,
+            status="queued",
+            progress=0,
+            current_step="queued",
+        )
+        self.session.add(job)
+        await self.session.flush()
+
+        self.session.add(
+            ResearchEvent(
+                job_id=job.id,
+                type="job_created",
+                status="queued",
+                message=f"Research job created from {selected_count} selected direction(s).",
+            )
+        )
+        self.session.add(
+            ResearchEvent(
+                job_id=job.id,
+                type="selection_context_created",
+                status="completed",
+                message=selection_context_message,
             )
         )
         self.session.add(

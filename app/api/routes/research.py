@@ -14,6 +14,7 @@ from app.schemas.research import (
     ResearchEvidenceChunkRead,
     ResearchEventRead,
     ResearchJobCreateFromSuggestion,
+    ResearchJobCreateFromSuggestions,
     ResearchJobRead,
     ResearchMemoryMatchRead,
     ResearchPlanRead,
@@ -58,6 +59,22 @@ async def create_research_job_from_suggestion(
 ) -> ResearchJobRead:
     job = await ResearchService(session).create_job_from_suggestion(
         suggestion_id=payload.suggestion_id,
+        project_id=payload.project_id,
+        budget_policy=payload.budget_policy,
+    )
+    await session.commit()
+    background_tasks.add_task(run_research_job, job.id)
+    return job
+
+
+@router.post("/jobs/from-suggestions", response_model=ResearchJobRead)
+async def create_research_job_from_suggestions(
+    payload: ResearchJobCreateFromSuggestions,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db_session),
+) -> ResearchJobRead:
+    job = await ResearchService(session).create_job_from_suggestions(
+        suggestion_ids=payload.suggestion_ids,
         project_id=payload.project_id,
         budget_policy=payload.budget_policy,
     )
