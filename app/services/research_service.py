@@ -1,7 +1,10 @@
+from datetime import UTC, datetime
+
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.research_repository import ResearchRepository
+from app.core.config import settings
 from app.schemas.research import (
     CostRecordRead,
     ModelCallLogRead,
@@ -9,6 +12,7 @@ from app.schemas.research import (
     ResearchEvidenceChunkRead,
     ResearchEventRead,
     ResearchJobRead,
+    ResearchMemoryMatchRead,
     ResearchPlanRead,
     ResearchPlanStep,
     ResearchReportRead,
@@ -21,6 +25,7 @@ from app.services.citation_guardrail_service import CitationGuardrailService
 from app.services.cost_tracker_service import CostTrackerService
 from app.services.model_router import ModelRoute
 from app.services.report_service import ReportService
+from app.services.research_memory_service import ResearchMemoryService
 from app.services.suggestion_service import SuggestionService
 from app.services.verification_service import VerificationService
 
@@ -38,28 +43,53 @@ class ResearchService:
         audience: str | None,
         freshness: str | None,
     ) -> ResearchSuggestionResponse:
-        generated_suggestions = await SuggestionService().generate(topic=topic)
+        normalized_topic = " ".join(topic.strip().split())
+        cached_batch = await self.repository.get_recent_suggestion_batch(
+            topic=normalized_topic,
+            project_id=project_id,
+            audience=audience,
+            freshness=freshness,
+            ttl_hours=settings.suggestion_cache_ttl_hours,
+        )
+        if cached_batch is not None and len(cached_batch.suggestions) >= 10:
+            await self.repository.create_cost_record(
+                job_id=None,
+                category="suggestion_cache_hit",
+                amount=0.0,
+                description=(
+                    f"Reused suggestion batch for '{normalized_topic}' within "
+                    f"{settings.suggestion_cache_ttl_hours}h cache window."
+                ),
+            )
+            return self._suggestion_batch_to_schema(cached_batch, cache_hit=True)
+
+        generated_suggestions = await SuggestionService().generate(topic=normalized_topic)
         batch = await self.repository.create_suggestion_batch(
-            topic=topic,
+            topic=normalized_topic,
             project_id=project_id,
             audience=audience,
             freshness=freshness,
             suggestions=generated_suggestions,
         )
-
-        return ResearchSuggestionResponse(
-            suggestion_batch_id=batch.id,
-            suggestions=[
-                ResearchSuggestion(
-                    id=suggestion.id,
-                    title=suggestion.title,
-                    summary=suggestion.summary,
-                    score=float(suggestion.score),
-                    reason=suggestion.reason,
-                )
-                for suggestion in batch.suggestions
-            ],
+        await self.repository.create_cost_record(
+            job_id=None,
+            category="suggestion_cache_miss",
+            amount=0.0,
+            description=f"Generated fresh suggestions for '{normalized_topic}'.",
         )
+
+        return self._suggestion_batch_to_schema(batch, cache_hit=False)
+
+    async def find_memory_matches(self, query: str) -> list[ResearchMemoryMatchRead]:
+        jobs = await self.repository.list_completed_jobs_for_memory()
+        matches = ResearchMemoryService().rank_matches(query=query, jobs=jobs)
+        await self.repository.create_cost_record(
+            job_id=None,
+            category="cache_hit" if matches else "cache_miss",
+            amount=0.0,
+            description=f"Research memory lookup for query '{query}' returned {len(matches)} matches.",
+        )
+        return [await self._memory_match_to_schema(match) for match in matches]
 
     async def create_job_from_suggestion(
         self,
@@ -208,8 +238,13 @@ class ResearchService:
         await self._ensure_job_exists(job_id)
         model_calls = await self.repository.list_model_call_logs(job_id)
         cost_records = await self.repository.list_cost_records(job_id)
-        total_estimated_cost = sum(float(log.estimated_cost) for log in model_calls) + sum(
-            float(record.amount) for record in cost_records
+        cost_tracker = CostTrackerService()
+        total_estimated_cost = sum(
+            self._estimated_model_call_cost(log, cost_tracker=cost_tracker)
+            for log in model_calls
+        ) + sum(
+            self._estimated_record_cost(record, cost_tracker=cost_tracker)
+            for record in cost_records
         )
 
         return ResearchCostSummaryRead(
@@ -220,12 +255,18 @@ class ResearchService:
             tool_record_count=len(cost_records),
             input_tokens=sum(log.input_tokens for log in model_calls),
             output_tokens=sum(log.output_tokens for log in model_calls),
-            model_calls=[self._model_call_to_schema(log) for log in model_calls],
-            cost_records=[self._cost_record_to_schema(record) for record in cost_records],
+            model_calls=[
+                self._model_call_to_schema(log, cost_tracker=cost_tracker)
+                for log in model_calls
+            ],
+            cost_records=[
+                self._cost_record_to_schema(record, cost_tracker=cost_tracker)
+                for record in cost_records
+            ],
         )
 
     async def start_review(self, job_id: str) -> ResearchJobRead:
-        job = await self.repository.get_job(job_id)
+        job = await self.repository.get_job_basic(job_id)
         if job is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research job not found")
         if job.status == "running":
@@ -237,7 +278,7 @@ class ResearchService:
         updated_job = await self.repository.update_job_status(
             job_id=job_id,
             status="running",
-            progress=max(job.progress, 80),
+            progress=82,
             current_step="review_queued",
         )
         await self.repository.add_event(
@@ -245,6 +286,35 @@ class ResearchService:
             event_type="review_queued",
             status="waiting",
             message="ReviewAgent queued a stronger evidence pass.",
+        )
+        return self._job_to_schema(updated_job or job)
+
+    async def retry_job(self, job_id: str) -> ResearchJobRead:
+        job = await self.repository.get_job_basic(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research job not found")
+        if job.status == "running":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This research job is already running. Please wait for it to finish.",
+            )
+        if job.status != "failed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Only failed research jobs can be retried.",
+            )
+
+        updated_job = await self.repository.update_job_status(
+            job_id=job_id,
+            status="queued",
+            progress=0,
+            current_step="retry_queued",
+        )
+        await self.repository.add_event(
+            job_id=job_id,
+            event_type="retry_queued",
+            status="waiting",
+            message="Research retry queued.",
         )
         return self._job_to_schema(updated_job or job)
 
@@ -380,6 +450,36 @@ class ResearchService:
             status=report.status,
         )
 
+    def _suggestion_batch_to_schema(
+        self,
+        batch: object,
+        *,
+        cache_hit: bool,
+    ) -> ResearchSuggestionResponse:
+        cache_age_seconds: int | None = None
+        created_at = getattr(batch, "created_at", None)
+        if cache_hit and created_at is not None:
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=UTC)
+            cache_age_seconds = max(0, int((datetime.now(UTC) - created_at).total_seconds()))
+
+        return ResearchSuggestionResponse(
+            suggestion_batch_id=batch.id,
+            cache_hit=cache_hit,
+            cache_age_seconds=cache_age_seconds,
+            source="cache" if cache_hit else "generated",
+            suggestions=[
+                ResearchSuggestion(
+                    id=suggestion.id,
+                    title=suggestion.title,
+                    summary=suggestion.summary,
+                    score=float(suggestion.score),
+                    reason=suggestion.reason,
+                )
+                for suggestion in batch.suggestions
+            ],
+        )
+
     def _verification_to_schema(self, verification: object) -> ResearchVerificationRead:
         return ResearchVerificationRead(
             id=verification.id,
@@ -398,7 +498,25 @@ class ResearchService:
             routing_reason=verification.routing_reason,
         )
 
-    def _model_call_to_schema(self, log: object) -> ModelCallLogRead:
+    def _estimated_model_call_cost(self, log: object, *, cost_tracker: CostTrackerService) -> float:
+        stored_cost = float(log.estimated_cost)
+        if stored_cost > 0:
+            return stored_cost
+        return cost_tracker.estimate_model_cost(
+            provider=log.provider,
+            model=log.model,
+            input_tokens=log.input_tokens,
+            output_tokens=log.output_tokens,
+        )
+
+    def _estimated_record_cost(self, record: object, *, cost_tracker: CostTrackerService) -> float:
+        return cost_tracker.estimate_record_cost(
+            category=record.category,
+            amount=float(record.amount),
+            description=record.description,
+        )
+
+    def _model_call_to_schema(self, log: object, *, cost_tracker: CostTrackerService) -> ModelCallLogRead:
         return ModelCallLogRead(
             id=log.id,
             job_id=log.job_id,
@@ -408,17 +526,34 @@ class ResearchService:
             reason=log.reason,
             input_tokens=log.input_tokens,
             output_tokens=log.output_tokens,
-            estimated_cost=float(log.estimated_cost),
+            estimated_cost=self._estimated_model_call_cost(log, cost_tracker=cost_tracker),
         )
 
-    def _cost_record_to_schema(self, record: object) -> CostRecordRead:
+    def _cost_record_to_schema(self, record: object, *, cost_tracker: CostTrackerService) -> CostRecordRead:
         return CostRecordRead(
             id=record.id,
             job_id=record.job_id,
             category=record.category,
-            amount=float(record.amount),
+            amount=self._estimated_record_cost(record, cost_tracker=cost_tracker),
             currency=record.currency,
             description=record.description,
+        )
+
+    async def _memory_match_to_schema(self, match: dict) -> ResearchMemoryMatchRead:
+        job = match["job"]
+        report = await self.repository.get_latest_report(job.id)
+        return ResearchMemoryMatchRead(
+            job_id=job.id,
+            suggestion_id=job.suggestion_id,
+            title=match["title"],
+            summary=match["summary"],
+            score=match["score"],
+            verification_score=float(report.verification_score) if report else 0.0,
+            citation_count=report.citation_count if report else 0,
+            source_count=len(job.sources),
+            evidence_count=len(job.evidence_chunks),
+            runtime_seconds=self._runtime_seconds(job),
+            updated_at=job.updated_at,
         )
 
     async def _ensure_job_exists(self, job_id: str) -> None:
@@ -434,4 +569,52 @@ class ResearchService:
             status=job.status,
             progress=job.progress,
             current_step=job.current_step,
+            display_step=self._display_step(job.current_step, job.status),
+            runtime_seconds=self._runtime_seconds(job),
+            created_at=job.created_at,
+            updated_at=job.updated_at,
         )
+
+    def _runtime_seconds(self, job: object) -> int:
+        created_at = getattr(job, "created_at", None)
+        if created_at is None:
+            return 0
+
+        end_time = getattr(job, "updated_at", None)
+        if job.status in {"queued", "running", "awaiting_search", "awaiting_extraction", "awaiting_report", "awaiting_verification"}:
+            end_time = datetime.now(UTC)
+        if end_time is None:
+            return 0
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=UTC)
+        return max(0, int((end_time - created_at).total_seconds()))
+
+    def _display_step(self, current_step: str, status: str) -> str:
+        labels = {
+            "queued": "Queued",
+            "retry_queued": "Retry queued",
+            "planning": "Planning research approach",
+            "plan_created": "Research plan ready",
+            "source_discovery_ready": "Preparing source discovery",
+            "source_discovery": "Finding sources",
+            "sources_discovered": "Sources discovered",
+            "extracting_evidence": "Extracting evidence",
+            "evidence_extracted": "Evidence ready",
+            "generating_report": "Writing cited report",
+            "report_generated": "Cited report ready",
+            "verifying_report": "Checking citations and confidence",
+            "quality_gate_passed": "Quality gate passed",
+            "quality_gate_attention_required": "Needs evidence review",
+            "review_queued": "Review queued",
+            "reviewing_sources": "Reviewing sources",
+            "review_sources_discovered": "Review sources discovered",
+            "review_extracting_evidence": "Reviewing evidence",
+            "review_regenerating_report": "Rewriting report with stronger evidence",
+            "failed": "Research failed",
+            "review_failed": "Review failed",
+        }
+        if status == "failed":
+            return labels.get(current_step, "Research failed")
+        return labels.get(current_step, current_step.replace("_", " ").capitalize())

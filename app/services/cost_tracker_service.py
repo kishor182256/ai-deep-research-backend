@@ -1,3 +1,5 @@
+import re
+
 from app.core.config import settings
 from app.repositories.research_repository import ResearchRepository
 from app.services.model_router import ModelRoute
@@ -18,6 +20,7 @@ class CostTrackerService:
         input_tokens = self.estimate_tokens(input_text)
         output_tokens = self.estimate_tokens(output_text)
         estimated_cost = self.estimate_model_cost(
+            provider=route.provider,
             model=route.model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -56,9 +59,20 @@ class CostTrackerService:
             return 0
         return max(1, len(text) // 4)
 
-    def estimate_model_cost(self, *, model: str, input_tokens: int, output_tokens: int) -> float:
+    def estimate_model_cost(
+        self,
+        *,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        provider: str | None = None,
+    ) -> float:
         total_tokens = input_tokens + output_tokens
         if total_tokens == 0:
+            return 0.0
+        if provider in {"deterministic", "python"} or model in {
+            "citation-quality-gate-v1",
+        }:
             return 0.0
 
         rate = (
@@ -70,3 +84,21 @@ class CostTrackerService:
 
     def estimate_search_cost(self, *, call_count: int) -> float:
         return round(call_count * settings.estimated_search_cost_per_call, 6)
+
+    def estimate_record_cost(
+        self,
+        *,
+        category: str,
+        amount: float,
+        description: str | None,
+    ) -> float:
+        if amount > 0:
+            return round(amount, 6)
+        if category not in {"search", "review_search"}:
+            return 0.0
+        if not description or "provider status 'tavily'" not in description:
+            return 0.0
+
+        query_match = re.search(r"with (\d+) generated queries", description)
+        call_count = int(query_match.group(1)) if query_match else 1
+        return self.estimate_search_cost(call_count=call_count)

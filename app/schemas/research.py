@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -19,6 +21,9 @@ class ResearchSuggestion(BaseModel):
 class ResearchSuggestionResponse(BaseModel):
     suggestion_batch_id: str
     suggestions: list[ResearchSuggestion]
+    cache_hit: bool = False
+    cache_age_seconds: int | None = None
+    source: str = "generated"
 
 
 class ResearchJobCreateFromSuggestion(BaseModel):
@@ -34,6 +39,10 @@ class ResearchJobRead(BaseModel):
     status: str
     progress: int
     current_step: str
+    display_step: str
+    runtime_seconds: int
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class ResearchEventRead(BaseModel):
@@ -149,3 +158,17 @@ class ResearchCostSummaryRead(BaseModel):
     output_tokens: int
     model_calls: list[ModelCallLogRead]
     cost_records: list[CostRecordRead]
+
+
+class ResearchMemoryMatchRead(BaseModel):
+    job_id: str
+    suggestion_id: str | None = None
+    title: str
+    summary: str
+    score: float
+    verification_score: float
+    citation_count: int
+    source_count: int
+    evidence_count: int
+    runtime_seconds: int
+    updated_at: datetime | None = None

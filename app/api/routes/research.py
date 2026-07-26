@@ -15,6 +15,7 @@ from app.schemas.research import (
     ResearchEventRead,
     ResearchJobCreateFromSuggestion,
     ResearchJobRead,
+    ResearchMemoryMatchRead,
     ResearchPlanRead,
     ResearchReportRead,
     ResearchSourceRead,
@@ -39,6 +40,14 @@ async def create_research_suggestions(
         audience=payload.audience,
         freshness=payload.freshness,
     )
+
+
+@router.get("/memory", response_model=list[ResearchMemoryMatchRead])
+async def get_research_memory_matches(
+    query: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> list[ResearchMemoryMatchRead]:
+    return await ResearchService(session).find_memory_matches(query)
 
 
 @router.post("/jobs/from-suggestion", response_model=ResearchJobRead)
@@ -147,6 +156,18 @@ async def review_research_job(
     job = await ResearchService(session).start_review(job_id)
     await session.commit()
     background_tasks.add_task(run_research_review, job_id)
+    return job
+
+
+@router.post("/jobs/{job_id}/retry", response_model=ResearchJobRead)
+async def retry_research_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db_session),
+) -> ResearchJobRead:
+    job = await ResearchService(session).retry_job(job_id)
+    await session.commit()
+    background_tasks.add_task(run_research_job, job_id)
     return job
 
 

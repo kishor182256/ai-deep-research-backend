@@ -35,6 +35,13 @@
       }
     },
     {
+      "name": "User Flow 1B - Check Research Memory",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/research/memory?query=electric vehicles in India"
+      }
+    },
+    {
       "name": "User Flow 2 - Select One Suggestion And Auto Start Research",
       "request": {
         "method": "POST",
@@ -132,6 +139,13 @@
       "request": {
         "method": "POST",
         "url": "{{base_url}}/research/jobs/replace-with-job-id/review"
+      }
+    },
+    {
+      "name": "Retry Failed Research Job",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/research/jobs/replace-with-job-id/retry"
       }
     },
     {

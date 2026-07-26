@@ -25,15 +25,18 @@ class Settings(BaseSettings):
     default_reasoning_model: str = "gpt-4.1"
     default_embedding_model: str = "text-embedding-3-small"
 
-    estimated_fast_model_cost_per_1k_tokens: float = 0.0
-    estimated_reasoning_model_cost_per_1k_tokens: float = 0.0
-    estimated_search_cost_per_call: float = 0.0
+    estimated_fast_model_cost_per_1k_tokens: float = 0.00015
+    estimated_reasoning_model_cost_per_1k_tokens: float = 0.003
+    estimated_search_cost_per_call: float = 0.001
 
     search_query_count: int = 3
     review_search_query_count: int = 5
     search_provider_timeout_seconds: float = 8.0
+    suggestion_generation_timeout_seconds: float = 5.0
     report_generation_timeout_seconds: float = 15.0
+    content_generation_timeout_seconds: float = 18.0
     report_generation_max_evidence_chunks: int = 8
+    suggestion_cache_ttl_hours: int = 24
 
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173", "http://localhost:8443"])
 

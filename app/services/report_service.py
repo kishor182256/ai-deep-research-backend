@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 
@@ -46,39 +47,42 @@ class ReportService:
         evidence_chunks: list[ResearchEvidenceChunk],
     ) -> dict[str, str | int | float] | None:
         route = ModelRouter().route(task_type="report", query=objective)
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        client = AsyncOpenAI(api_key=settings.openai_api_key, max_retries=0)
         evidence_text = self._evidence_prompt(
             evidence_chunks=evidence_chunks[: settings.report_generation_max_evidence_chunks]
         )
 
         try:
-            response = await client.chat.completions.create(
-                model=route.model,
-                temperature=0.35,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You write concise cited research reports. Use only the provided evidence. "
-                            "Every factual claim should include citation markers like [1]. "
-                            "Return only valid JSON."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Research objective: {objective}\n\n"
-                            f"Evidence:\n{evidence_text}\n\n"
-                            "Return JSON with keys: title, summary, content, verification_score. "
-                            "content must be markdown and include a Sources section listing citation numbers."
-                        ),
-                    },
-                ],
-                response_format={"type": "json_object"},
-                timeout=settings.report_generation_timeout_seconds,
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=route.model,
+                    temperature=0.35,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You write concise cited research reports. Use only the provided evidence. "
+                                "Every factual claim should include citation markers like [1]. "
+                                "Return only valid JSON."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Research objective: {objective}\n\n"
+                                f"Evidence:\n{evidence_text}\n\n"
+                                "Return JSON with keys: title, summary, content, verification_score. "
+                                "content must be markdown and include a Sources section listing citation numbers."
+                            ),
+                        },
+                    ],
+                    response_format={"type": "json_object"},
+                    timeout=settings.report_generation_timeout_seconds,
+                ),
+                timeout=settings.report_generation_timeout_seconds + 1,
             )
         except Exception as exc:
-            logger.warning("OpenAI report generation failed; using fallback.", exc_info=exc)
+            logger.warning("OpenAI report generation failed; using fallback: %s", exc)
             return None
 
         content = response.choices[0].message.content
@@ -88,7 +92,7 @@ class ReportService:
         try:
             generated = GeneratedReport.model_validate(json.loads(content))
         except (json.JSONDecodeError, ValidationError, TypeError) as exc:
-            logger.warning("OpenAI report response was invalid; using fallback.", exc_info=exc)
+            logger.warning("OpenAI report response was invalid; using fallback: %s", exc)
             return None
 
         verification_score = generated.verification_score / 10 if generated.verification_score > 1 else generated.verification_score

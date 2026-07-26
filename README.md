@@ -30,6 +30,7 @@ Use these endpoints for normal testing:
 
 ```text
 POST /api/v1/research/suggestions
+GET  /api/v1/research/memory?query={topic}
 POST /api/v1/research/jobs/from-suggestion
 GET  /api/v1/research/jobs/{job_id}
 GET  /api/v1/research/jobs/{job_id}/events
@@ -37,6 +38,7 @@ GET  /api/v1/research/jobs/{job_id}/sources
 GET  /api/v1/research/jobs/{job_id}/evidence
 GET  /api/v1/research/jobs/{job_id}/report
 POST /api/v1/research/jobs/{job_id}/review
+POST /api/v1/research/jobs/{job_id}/retry
 POST /api/v1/research/jobs/{job_id}/report/regenerate
 ```
 

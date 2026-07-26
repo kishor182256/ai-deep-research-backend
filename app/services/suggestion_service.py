@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import Any
@@ -42,41 +43,44 @@ class SuggestionService:
 
     async def _generate_with_openai(self, *, topic: str) -> list[dict[str, str | float]]:
         route = ModelRouter().route(task_type="suggestion", query=topic)
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        client = AsyncOpenAI(api_key=settings.openai_api_key, max_retries=0)
 
         try:
-            response = await client.chat.completions.create(
-                model=route.model,
-                temperature=0.7,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You generate dynamic research suggestion options for an AI deep research app. "
-                            "Return only valid JSON. Create exactly 10 specific, non-overlapping, useful research angles. "
-                            "Do not use generic repeated phrasing. Make each suggestion actionable for a researcher."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Topic: {topic}\n\n"
-                            "Return JSON with this shape:\n"
-                            "{\n"
-                            "  \"suggestions\": [\n"
-                            "    {\"title\": string, \"summary\": string, \"score\": number, \"reason\": string}\n"
-                            "  ]\n"
-                            "}\n\n"
-                            "Scores should descend from most useful to least useful. "
-                            "Use decimal scores between 0.0 and 1.0, for example 0.96."
-                        ),
-                    },
-                ],
-                response_format={"type": "json_object"},
-                timeout=20,
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=route.model,
+                    temperature=0.7,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You generate dynamic research suggestion options for an AI deep research app. "
+                                "Return only valid JSON. Create exactly 10 specific, non-overlapping, useful research angles. "
+                                "Do not use generic repeated phrasing. Make each suggestion actionable for a researcher."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Topic: {topic}\n\n"
+                                "Return JSON with this shape:\n"
+                                "{\n"
+                                "  \"suggestions\": [\n"
+                                "    {\"title\": string, \"summary\": string, \"score\": number, \"reason\": string}\n"
+                                "  ]\n"
+                                "}\n\n"
+                                "Scores should descend from most useful to least useful. "
+                                "Use decimal scores between 0.0 and 1.0, for example 0.96."
+                            ),
+                        },
+                    ],
+                    response_format={"type": "json_object"},
+                    timeout=settings.suggestion_generation_timeout_seconds,
+                ),
+                timeout=settings.suggestion_generation_timeout_seconds + 1,
             )
         except Exception as exc:
-            logger.warning("OpenAI suggestion generation failed; using fallback.", exc_info=exc)
+            logger.warning("OpenAI suggestion generation failed; using fallback: %s", exc)
             return []
 
         content = response.choices[0].message.content
@@ -87,7 +91,7 @@ class SuggestionService:
             payload = json.loads(content)
             generated = GeneratedSuggestionList.model_validate(payload)
         except (json.JSONDecodeError, ValidationError, TypeError) as exc:
-            logger.warning("OpenAI suggestion response was invalid; using fallback.", exc_info=exc)
+            logger.warning("OpenAI suggestion response was invalid; using fallback: %s", exc)
             return []
 
         return [self._clean_suggestion(item.model_dump(), index=index) for index, item in enumerate(generated.suggestions)]

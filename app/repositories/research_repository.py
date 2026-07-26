@@ -1,4 +1,6 @@
-from sqlalchemy import delete, select
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -53,6 +55,44 @@ class ResearchRepository:
         await self.session.flush()
         await self.session.refresh(batch, attribute_names=["suggestions"])
         return batch
+
+    async def get_recent_suggestion_batch(
+        self,
+        *,
+        topic: str,
+        project_id: str | None,
+        audience: str | None,
+        freshness: str | None,
+        ttl_hours: int,
+    ) -> ResearchSuggestionBatch | None:
+        normalized_topic = " ".join(topic.strip().split()).lower()
+        cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
+        project_filter = (
+            ResearchSuggestionBatch.project_id.is_(None)
+            if project_id is None
+            else ResearchSuggestionBatch.project_id == project_id
+        )
+
+        result = await self.session.execute(
+            select(ResearchSuggestionBatch)
+            .where(
+                func.lower(ResearchSuggestionBatch.topic) == normalized_topic,
+                project_filter,
+                or_(
+                    ResearchSuggestionBatch.audience == audience,
+                    ResearchSuggestionBatch.audience.is_(None) if audience is None else False,
+                ),
+                or_(
+                    ResearchSuggestionBatch.freshness == freshness,
+                    ResearchSuggestionBatch.freshness.is_(None) if freshness is None else False,
+                ),
+                ResearchSuggestionBatch.created_at >= cutoff,
+            )
+            .options(selectinload(ResearchSuggestionBatch.suggestions))
+            .order_by(ResearchSuggestionBatch.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def get_suggestion(self, suggestion_id: str) -> ResearchSuggestion | None:
         return await self.session.get(ResearchSuggestion, suggestion_id)
@@ -110,6 +150,7 @@ class ResearchRepository:
         job.progress = progress
         job.current_step = current_step
         await self.session.flush()
+        await self.session.refresh(job)
         return job
 
     async def add_event(
@@ -210,6 +251,9 @@ class ResearchRepository:
             .limit(1)
         )
         return result.scalar_one_or_none()
+
+    async def get_report(self, report_id: str) -> ResearchReport | None:
+        return await self.session.get(ResearchReport, report_id)
 
     async def update_latest_report_verification_score(
         self,
@@ -384,6 +428,9 @@ class ResearchRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_job_basic(self, job_id: str) -> ResearchJob | None:
+        return await self.session.get(ResearchJob, job_id)
+
     async def list_job_events(self, job_id: str) -> list[ResearchEvent]:
         result = await self.session.execute(
             select(ResearchEvent)
@@ -451,5 +498,19 @@ class ResearchRepository:
             select(CostRecord)
             .where(CostRecord.job_id == job_id)
             .order_by(CostRecord.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def list_completed_jobs_for_memory(self, *, limit: int = 50) -> list[ResearchJob]:
+        result = await self.session.execute(
+            select(ResearchJob)
+            .where(ResearchJob.status == "completed")
+            .options(
+                selectinload(ResearchJob.suggestion),
+                selectinload(ResearchJob.sources),
+                selectinload(ResearchJob.evidence_chunks),
+            )
+            .order_by(ResearchJob.updated_at.desc())
+            .limit(limit)
         )
         return list(result.scalars().all())
