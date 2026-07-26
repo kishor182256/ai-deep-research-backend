@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     search_query_count: int = 3
     review_search_query_count: int = 5
     search_provider_timeout_seconds: float = 8.0
-    suggestion_generation_timeout_seconds: float = 5.0
+    suggestion_generation_timeout_seconds: float = 18.0
     report_generation_timeout_seconds: float = 15.0
     content_generation_timeout_seconds: float = 18.0
     report_generation_max_evidence_chunks: int = 8

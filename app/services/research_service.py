@@ -51,7 +51,11 @@ class ResearchService:
             freshness=freshness,
             ttl_hours=settings.suggestion_cache_ttl_hours,
         )
-        if cached_batch is not None and len(cached_batch.suggestions) >= 10:
+        if (
+            cached_batch is not None
+            and len(cached_batch.suggestions) >= 10
+            and not self._is_legacy_static_suggestion_batch(cached_batch)
+        ):
             await self.repository.create_cost_record(
                 job_id=None,
                 category="suggestion_cache_hit",
@@ -79,6 +83,40 @@ class ResearchService:
         )
 
         return self._suggestion_batch_to_schema(batch, cache_hit=False)
+
+    def _is_legacy_static_suggestion_batch(self, batch: object) -> bool:
+        legacy_phrases = {
+            "market momentum",
+            "adoption signals",
+            "business models behind",
+            "consumer behavior",
+            "pricing",
+            "key companies",
+            "useful generic angle",
+            "most important recent developments",
+            "biggest opportunities and risks",
+            "data and statistics best explain",
+            "experts saying about",
+            "likely to happen next",
+            "beginners understand first",
+            "safe degraded planning",
+            "define the scope and boundaries",
+            "build the foundational concepts",
+            "foundational concepts behind",
+            "core process or causal chain",
+            "map the timeline and development",
+            "identify evidence, measurements",
+            "study examples and real-world cases",
+            "analyze relationships and dependencies",
+            "compare competing explanations and viewpoints",
+            "correct misconceptions and weak assumptions",
+            "define open questions and next-step research",
+        }
+        titles_and_reasons = " ".join(
+            f"{getattr(suggestion, 'title', '')} {getattr(suggestion, 'reason', '')}"
+            for suggestion in getattr(batch, "suggestions", [])
+        ).lower()
+        return any(phrase in titles_and_reasons for phrase in legacy_phrases)
 
     async def find_memory_matches(self, query: str) -> list[ResearchMemoryMatchRead]:
         jobs = await self.repository.list_completed_jobs_for_memory()

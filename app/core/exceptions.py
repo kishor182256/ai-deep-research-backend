@@ -129,6 +129,33 @@ def register_exception_handlers(app: FastAPI) -> None:
             details=_debug_details(str(exc)),
         )
 
+    @app.exception_handler(OSError)
+    async def os_error_handler(request: Request, exc: OSError) -> JSONResponse:
+        if _looks_like_database_connection_error(exc):
+            logger.exception(
+                "Database connection error",
+                extra={"request_id": _request_id(request), "path": str(request.url.path)},
+            )
+            return _error_response(
+                request=request,
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                code="database_unavailable",
+                message="We are having trouble reaching the database. Please start PostgreSQL and try again.",
+                details=_debug_details(str(exc)),
+            )
+
+        logger.exception(
+            "Operating system error",
+            extra={"request_id": _request_id(request), "path": str(request.url.path)},
+        )
+        return _error_response(
+            request=request,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            code="system_error",
+            message=ERROR_MESSAGES[status.HTTP_500_INTERNAL_SERVER_ERROR],
+            details=_debug_details(str(exc)),
+        )
+
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         logger.exception(
@@ -222,3 +249,14 @@ def _code_for_status(status_code: int) -> str:
 
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", str(uuid4()))
+
+
+def _looks_like_database_connection_error(exc: OSError) -> bool:
+    text = str(exc).lower()
+    return (
+        "connect call failed" in text
+        or "connection refused" in text
+        or "errno 10061" in text
+        or "127.0.0.1', 5432" in text
+        or "::1', 5432" in text
+    )

@@ -1,10 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import SQLAlchemyError
+import logging
 
 from app.api.routes import content, health, projects, research
 from app.core.config import settings
 from app.core.exceptions import register_exception_handlers
 from app.db.session import init_db
+
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -31,7 +35,18 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def on_startup() -> None:
-        await init_db()
+        app.state.database_ready = False
+        try:
+            await init_db()
+        except (OSError, SQLAlchemyError) as exc:
+            logger.warning(
+                "Database startup check failed. API will start in degraded mode. "
+                "Start PostgreSQL with `docker compose up -d postgres redis` and restart the backend. "
+                "Error: %s",
+                exc,
+            )
+        else:
+            app.state.database_ready = True
 
     return app
 

@@ -20,6 +20,42 @@ class SourceDiscoveryResult:
     provider_status: str
 
 
+@dataclass(frozen=True)
+class SearchPlan:
+    primary_query: str
+    alternative_queries: list[str]
+    academic_queries: list[str]
+    government_queries: list[str]
+    dataset_queries: list[str]
+    image_queries: list[str]
+    video_queries: list[str]
+    recent_news_queries: list[str]
+    historical_queries: list[str]
+    comparison_queries: list[str]
+    contradictory_queries: list[str]
+
+    def flattened(self) -> list[str]:
+        ordered_queries = [
+            self.primary_query,
+            *self.alternative_queries,
+            *self.academic_queries,
+            *self.government_queries,
+            *self.dataset_queries,
+            *self.recent_news_queries,
+            *self.historical_queries,
+            *self.comparison_queries,
+            *self.contradictory_queries,
+        ]
+        unique_queries: list[str] = []
+        seen: set[str] = set()
+        for query in ordered_queries:
+            normalized = " ".join(query.split()).lower()
+            if normalized and normalized not in seen:
+                unique_queries.append(query)
+                seen.add(normalized)
+        return unique_queries
+
+
 class SearchService:
     def __init__(self) -> None:
         self.model_router = ModelRouter()
@@ -61,14 +97,54 @@ class SearchService:
 
     def generate_queries(self, *, objective: str, query_count: int | None = None) -> list[str]:
         clean_objective = self._search_topic_from_objective(objective)
-        queries = [
-            clean_objective,
-            f"{clean_objective} latest developments",
-            f"{clean_objective} statistics data report",
-            f"{clean_objective} expert analysis",
-            f"{clean_objective} risks opportunities policy",
-        ]
+        queries = self.plan_search_queries(research_dimension=clean_objective).flattened()
         return queries[: query_count or settings.search_query_count]
+
+    def plan_search_queries(self, *, research_dimension: str) -> SearchPlan:
+        dimension = " ".join(research_dimension.split()).strip(" ?")
+        return SearchPlan(
+            primary_query=dimension,
+            alternative_queries=[
+                f"{dimension} explanation evidence",
+                f"{dimension} key concepts",
+            ],
+            academic_queries=[
+                f"{dimension} scholarly research",
+                f"{dimension} peer reviewed study",
+            ],
+            government_queries=[
+                f"{dimension} government report",
+                f"{dimension} public data",
+            ],
+            dataset_queries=[
+                f"{dimension} dataset",
+                f"{dimension} statistics",
+            ],
+            image_queries=[
+                f"{dimension} diagram",
+                f"{dimension} visualization",
+            ],
+            video_queries=[
+                f"{dimension} expert lecture",
+                f"{dimension} educational animation",
+            ],
+            recent_news_queries=[
+                f"{dimension} recent developments",
+                f"{dimension} latest research",
+            ],
+            historical_queries=[
+                f"{dimension} history timeline",
+                f"{dimension} origins",
+            ],
+            comparison_queries=[
+                f"{dimension} comparison",
+                f"{dimension} alternatives",
+            ],
+            contradictory_queries=[
+                f"{dimension} criticism",
+                f"{dimension} debate misconceptions",
+            ],
+        )
 
     async def _search_tavily(
         self,
@@ -209,15 +285,8 @@ class SearchService:
     def _search_topic_from_objective(self, objective: str) -> str:
         clean_objective = " ".join(objective.split()).strip(" ?")
         patterns = [
-            r"^what are the most important recent developments in (?P<topic>.+)$",
-            r"^who are the key players shaping (?P<topic>.+)$",
-            r"^what are the biggest opportunities and risks in (?P<topic>.+)$",
-            r"^how has (?P<topic>.+) changed over the last few years$",
-            r"^what data and statistics best explain (?P<topic>.+)$",
-            r"^what are experts saying about (?P<topic>.+)$",
-            r"^what are the strongest arguments for and against (?P<topic>.+)$",
-            r"^what should beginners understand first about (?P<topic>.+)$",
-            r"^what is likely to happen next in (?P<topic>.+)$",
+            r"^research dimension:\s*(?P<topic>.+)$",
+            r"^learning objective:\s*(?P<topic>.+)$",
         ]
 
         for pattern in patterns:
