@@ -88,26 +88,29 @@ class ContentGenerationService:
             report_content=report.content,
             points=points,
         )
+        initial_hook = self._hook(clean_title=clean_title, points=points, platform=normalized_platform)
+        story_plan = self._story_plan(
+            platform=normalized_platform,
+            topic=clean_title,
+            hook=initial_hook,
+            structured_knowledge=structured_knowledge,
+        )
         package = await self._generate_platform_package(
             clean_title=clean_title,
             platform=normalized_platform,
             language=language,
             report_summary=report.summary,
             structured_knowledge=structured_knowledge,
+            story_plan=story_plan,
             points=points,
         )
         hook = str(package["hook"])
         hashtags = list(package["hashtags"])
-        story_plan = self._story_plan(
-            platform=normalized_platform,
-            topic=clean_title,
-            hook=hook,
-            structured_knowledge=structured_knowledge,
-        )
         chapter_plan = self._platform_module_plan(
             platform=normalized_platform,
             topic=clean_title,
             structured_knowledge=structured_knowledge,
+            story_plan=story_plan,
         )
         story_memory = self._story_memory(
             platform=normalized_platform,
@@ -191,6 +194,7 @@ class ContentGenerationService:
         language: str,
         report_summary: str,
         structured_knowledge: StructuredKnowledgeRead,
+        story_plan: StoryPlanRead,
         points: list[str],
     ) -> dict[str, str | list[str] | None]:
         if self._can_use_openai():
@@ -200,6 +204,7 @@ class ContentGenerationService:
                 language=language,
                 report_summary=report_summary,
                 structured_knowledge=structured_knowledge,
+                story_plan=story_plan,
             )
             if generated:
                 return generated
@@ -209,6 +214,7 @@ class ContentGenerationService:
             platform=platform,
             points=points,
             structured_knowledge=structured_knowledge,
+            story_plan=story_plan,
         )
 
     def _can_use_openai(self) -> bool:
@@ -226,11 +232,13 @@ class ContentGenerationService:
         language: str,
         report_summary: str,
         structured_knowledge: StructuredKnowledgeRead,
+        story_plan: StoryPlanRead,
     ) -> dict[str, str | list[str] | None] | None:
         route = ModelRouter().route(task_type="content_generation", query=clean_title)
         client = AsyncOpenAI(api_key=settings.openai_api_key, max_retries=0)
         platform_rules = self._platform_prompt_rules(platform)
         knowledge_json = structured_knowledge.model_dump()
+        story_plan_json = story_plan.model_dump()
 
         try:
             response = await asyncio.wait_for(
@@ -246,6 +254,8 @@ class ContentGenerationService:
                                 "Do not repeat the topic mechanically. Do not write like a report. "
                                 "Use storytelling, retention, visual planning, and platform-specific structure. "
                                 "Every factual claim must stay grounded in the provided structured knowledge. "
+                                "Use the provided canonical story plan as the source of truth. "
+                                "Do not invent a separate hook, evidence sequence, twist, or payoff. "
                                 "Return only valid JSON."
                             ),
                         },
@@ -257,11 +267,14 @@ class ContentGenerationService:
                                 f"Platform: {platform}\n"
                                 f"Report summary: {report_summary}\n\n"
                                 f"Structured knowledge JSON:\n{json.dumps(knowledge_json)}\n\n"
+                                f"Canonical story plan JSON:\n{json.dumps(story_plan_json)}\n\n"
                                 f"Platform rules:\n{platform_rules}\n\n"
                                 "Return JSON with keys: title, hook, script, caption, cta, hashtags, "
                                 "design_brief, image_prompts, video_prompts, seo_keywords, posting_time, "
                                 "thumbnail_text, thumbnail_prompt, tags, chapters, b_roll. "
-                                "Use arrays for list fields. Keep output specific and creator-ready."
+                                "Use arrays for list fields. Adapt the canonical beats to the requested platform "
+                                "without changing the story order or introducing unsupported facts. "
+                                "Keep output specific and creator-ready."
                             ),
                         },
                     ],
@@ -303,28 +316,30 @@ class ContentGenerationService:
         platform: str,
         points: list[str],
         structured_knowledge: StructuredKnowledgeRead,
+        story_plan: StoryPlanRead,
     ) -> dict[str, str | list[str] | None]:
-        hook = self._hook(clean_title=clean_title, points=points, platform=platform)
+        hook = story_plan.opening_hook
+        story_points = self._story_points(story_plan=story_plan, fallback_points=points)
         hashtags = self._hashtags(clean_title, platform=platform)
         if platform == "instagram":
             base_package = {
                 "title": f"{clean_title}: carousel/reel package",
-                "script": self._instagram_script(clean_title=clean_title, hook=hook, points=points),
-                "caption": self._instagram_caption(clean_title=clean_title, points=points, hashtags=hashtags),
+                "script": self._instagram_script(clean_title=clean_title, hook=hook, story_plan=story_plan),
+                "caption": self._instagram_caption(clean_title=clean_title, points=story_points, hashtags=hashtags),
                 "cta": "Save this, share it with someone tracking the topic, and follow for cited research breakdowns.",
             }
         elif platform == "youtube_long":
             base_package = {
                 "title": f"{clean_title}: long-form video outline",
-                "script": self._youtube_long_script(clean_title=clean_title, hook=hook, points=points),
-                "caption": self._youtube_long_description(clean_title=clean_title, points=points, hashtags=hashtags),
+                "script": self._youtube_long_script(clean_title=clean_title, hook=hook, story_plan=story_plan),
+                "caption": self._youtube_long_description(clean_title=clean_title, points=story_points, hashtags=hashtags),
                 "cta": "Subscribe for full evidence-backed deep dives and check the cited report before you decide.",
             }
         else:
             base_package = {
                 "title": f"{clean_title}: what matters now",
-                "script": self._youtube_shorts_script(clean_title=clean_title, hook=hook, points=points),
-                "caption": self._youtube_shorts_caption(clean_title=clean_title, points=points, hashtags=hashtags),
+                "script": self._youtube_shorts_script(clean_title=clean_title, hook=hook, story_plan=story_plan),
+                "caption": self._youtube_shorts_caption(clean_title=clean_title, points=story_points, hashtags=hashtags),
                 "cta": "Follow for more evidence-backed research summaries.",
             }
 
@@ -340,104 +355,95 @@ class ContentGenerationService:
                 "thumbnail_text": self._thumbnail_text(clean_title, platform=platform),
                 "thumbnail_prompt": self._thumbnail_prompt(clean_title, platform=platform),
                 "tags": [tag.replace("#", "") for tag in hashtags],
-                "chapters": self._chapters(points) if platform == "youtube_long" else [],
+                "chapters": self._chapters_from_story_plan(story_plan=story_plan) if platform == "youtube_long" else [],
                 "b_roll": self._b_roll(clean_title),
             }
         )
         return base_package
 
-    def _youtube_shorts_script(self, *, clean_title: str, hook: str, points: list[str]) -> str:
-        usable_points = points[:4] or [f"{clean_title} needs a clearer evidence-backed explanation."]
+    def _story_points(self, *, story_plan: StoryPlanRead, fallback_points: list[str]) -> list[str]:
+        points = [
+            self._shorten(beat.evidence_angle, limit=170)
+            for beat in story_plan.beats
+            if beat.evidence_angle.strip()
+        ]
+        if points:
+            return points
+        return fallback_points[:6] or [story_plan.ending]
+
+    def _youtube_shorts_script(self, *, clean_title: str, hook: str, story_plan: StoryPlanRead) -> str:
+        usable_beats = story_plan.beats[:5] or []
         lines = [
             hook,
             "",
-            "Here is the quick breakdown:",
+            "Here is the quick beat sequence:",
         ]
-        for index, point in enumerate(usable_points, start=1):
-            lines.append(f"{index}. {point}")
+        for index, beat in enumerate(usable_beats, start=1):
+            lines.append(
+                f"{index}. {beat.title}: {self._shorten(beat.evidence_angle, limit=120)} "
+                f"Visual: {beat.visual_direction}"
+            )
         lines.extend(
             [
                 "",
-                "The takeaway: do not look at one signal in isolation. Compare the evidence, the incentives, and the risks before forming a conclusion.",
+                f"The takeaway: {story_plan.ending}",
                 "Save this if you want the full research report behind it.",
             ]
         )
         return "\n".join(lines)
 
-    def _instagram_script(self, *, clean_title: str, hook: str, points: list[str]) -> str:
-        usable_points = points[:5] or [f"{clean_title} needs a clearer evidence-backed explanation."]
+    def _instagram_script(self, *, clean_title: str, hook: str, story_plan: StoryPlanRead) -> str:
+        usable_beats = story_plan.beats[:7] or []
         lines = [
             "Slide 1 / Reel opening:",
             hook,
             "",
             "Slides / beats:",
         ]
-        for index, point in enumerate(usable_points, start=2):
-            lines.append(f"Slide {index}: {point}")
+        for index, beat in enumerate(usable_beats, start=2):
+            lines.append(
+                f"Slide {index}: {beat.title} - {self._shorten(beat.evidence_angle, limit=130)} "
+                f"Visual: {beat.visual_direction}"
+            )
         lines.extend(
             [
                 "",
                 "Final slide:",
-                "The strongest take is the one that survives evidence, incentives, and risk checks.",
+                story_plan.ending,
             ]
         )
         return "\n".join(lines)
 
-    def _youtube_long_script(self, *, clean_title: str, hook: str, points: list[str]) -> str:
-        synthetic_knowledge = StructuredKnowledgeRead(
-            topic=clean_title,
-            facts=points[:8],
-            statistics=[],
-            citations=[],
-            timeline=[],
-            counterpoints=[],
-            trends=[],
-            visual_suggestions=[],
-            video_scene_suggestions=[],
-        )
-        chapter_plan = self._long_form_chapter_plan(
-            topic=clean_title,
-            structured_knowledge=synthetic_knowledge,
-        )
+    def _youtube_long_script(self, *, clean_title: str, hook: str, story_plan: StoryPlanRead) -> str:
         lines = [
             "# Documentary Script",
             "",
             "## Opening Hook",
             hook,
             "",
-            "Imagine the topic is not a headline, but a chain of decisions, incentives, history, and evidence. "
-            f"That is how we are going to unpack {clean_title}.",
+            f"This documentary follows one canonical story arc: {story_plan.story_arc}",
             "",
         ]
-        for chapter in chapter_plan:
+        for index, beat in enumerate(story_plan.beats, start=1):
             lines.extend(
                 [
-                    f"## {chapter.title}",
-                    f"Target: {chapter.target_words}, {chapter.target_minutes}",
+                    f"## Chapter {index}: {beat.title}",
+                    f"Purpose: {beat.purpose}",
                     "",
                     "Opening question:",
-                    chapter.question_flow[0],
+                    beat.narrative_question,
                     "",
-                    "Narrative expansion:",
-                    *[f"- {section}" for section in chapter.narrative_sections],
-                    "",
-                    "Learning objectives:",
-                    *[f"- {objective}" for objective in chapter.learning_objectives],
-                    "",
-                    "Evidence to satisfy before ending this chapter:",
-                    *[f"- {requirement}" for requirement in chapter.evidence_requirements],
-                    "",
-                    "Retention moments:",
-                    *[f"- {retention_hook}" for retention_hook in chapter.retention_hooks],
+                    "Evidence angle:",
+                    beat.evidence_angle,
                     "",
                     "Visual plan:",
-                    *[f"- {visual}" for visual in chapter.visual_plan],
+                    beat.visual_direction,
                     "",
-                    "Narration draft:",
-                    self._chapter_narration(chapter=chapter, topic=clean_title),
+                    "Retention hook:",
+                    beat.retention_hook,
                     "",
-                    "Transition:",
-                    chapter.transition,
+                    "Expansion note:",
+                    "Use this beat as the chapter source of truth, then expand it with examples, citations, and transitions.",
                     "",
                 ]
             )
@@ -533,9 +539,10 @@ class ContentGenerationService:
         hook: str,
         structured_knowledge: StructuredKnowledgeRead,
     ) -> StoryPlanRead:
-        runtime = self._target_runtime(platform)
-        layers = self._narrative_layers(platform)
         facts = structured_knowledge.facts or [f"Explain why {topic} matters now."]
+        primary_fact = facts[0]
+        foundation_fact = facts[min(1, len(facts) - 1)]
+        explanation_fact = facts[min(2, len(facts) - 1)]
         counterpoint = (
             structured_knowledge.counterpoints[0]
             if structured_knowledge.counterpoints
@@ -547,42 +554,109 @@ class ContentGenerationService:
             else "What changes next if the current pattern continues?"
         )
         statistics = structured_knowledge.statistics or ["Use the strongest available statistic as an on-screen evidence beat."]
+        timeline = (
+            structured_knowledge.timeline[0]
+            if structured_knowledge.timeline
+            else "Use the earliest relevant event, cause, or starting condition from the research."
+        )
 
-        beat_specs = self._beat_specs(platform)
-        evidence_angles = [
-            facts[0],
-            statistics[0],
-            facts[min(1, len(facts) - 1)],
-            counterpoint,
-            trend,
-            "Show what would change the conclusion and what the audience should watch next.",
+        beat_inputs = [
+            {
+                "title": "Hook",
+                "purpose": "Create curiosity using the strongest evidence-backed tension.",
+                "duration": "Reusable beat; adapter controls final runtime.",
+                "question": f"What makes {topic} worth paying attention to right now?",
+                "evidence": primary_fact,
+                "hook": self._retention_hook_from_text(primary_fact, fallback="Start with the strongest surprise, then delay the explanation."),
+                "visual": self._visual_from_evidence(topic=topic, evidence=primary_fact, fallback="A striking opening image connected to the core claim."),
+            },
+            {
+                "title": "Foundation",
+                "purpose": "Give the audience the minimum context required to understand the story.",
+                "duration": "Reusable beat; adapter controls final runtime.",
+                "question": f"What must someone understand first before judging {topic}?",
+                "evidence": foundation_fact,
+                "hook": self._retention_hook_from_text(foundation_fact, fallback="The background changes how the first claim should be read."),
+                "visual": self._visual_from_evidence(topic=topic, evidence=foundation_fact, fallback="Simple definition card, map, timeline, or labeled diagram."),
+            },
+            {
+                "title": "Mechanism",
+                "purpose": "Explain the cause, process, incentives, or system that makes the story work.",
+                "duration": "Reusable beat; adapter controls final runtime.",
+                "question": f"How does {topic} actually work underneath the headline?",
+                "evidence": explanation_fact,
+                "hook": self._retention_hook_from_text(explanation_fact, fallback="This is the part that makes the story click."),
+                "visual": self._visual_from_evidence(topic=topic, evidence=explanation_fact, fallback="Step-by-step explainer graphic."),
+            },
+            {
+                "title": "Evidence",
+                "purpose": "Prove the main point with the strongest available fact, statistic, or source-backed signal.",
+                "duration": "Reusable beat; adapter controls final runtime.",
+                "question": "What evidence should the viewer trust?",
+                "evidence": statistics[0],
+                "hook": self._retention_hook_from_text(statistics[0], fallback="One proof point changes the scale of the story."),
+                "visual": self._visual_from_evidence(topic=topic, evidence=statistics[0], fallback="Evidence card with citation and short interpretation."),
+            },
+            {
+                "title": "Timeline",
+                "purpose": "Show how the story reached the current moment.",
+                "duration": "Reusable beat; adapter controls final runtime.",
+                "question": "What changed over time, and why did that matter?",
+                "evidence": timeline,
+                "hook": self._retention_hook_from_text(timeline, fallback="The timeline reveals why the current moment was not random."),
+                "visual": self._visual_from_evidence(topic=topic, evidence=timeline, fallback="Timeline or before-after sequence."),
+            },
+            {
+                "title": "Counterpoint",
+                "purpose": "Add nuance, uncertainty, risks, or an alternative interpretation.",
+                "duration": "Reusable beat; adapter controls final runtime.",
+                "question": "What could make the simple version incomplete?",
+                "evidence": counterpoint,
+                "hook": self._retention_hook_from_text(counterpoint, fallback="The strongest objection is worth taking seriously."),
+                "visual": self._visual_from_evidence(topic=topic, evidence=counterpoint, fallback="Split-screen claim versus caveat."),
+            },
+            {
+                "title": "Payoff",
+                "purpose": "Resolve the opening curiosity and give one next signal to watch.",
+                "duration": "Reusable beat; adapter controls final runtime.",
+                "question": "What should the audience remember or do with this information?",
+                "evidence": trend,
+                "hook": self._retention_hook_from_text(trend, fallback="The ending should point to the next signal, not a generic CTA."),
+                "visual": self._visual_from_evidence(topic=topic, evidence=trend, fallback="Clean takeaway card with the next signal to watch."),
+            },
         ]
         beats = [
             StoryBeatRead(
-                title=spec["title"],
-                purpose=spec["purpose"],
-                duration=spec["duration"],
-                narrative_question=spec["question"],
-                evidence_angle=self._shorten(evidence_angles[index % len(evidence_angles)], limit=170),
-                retention_hook=spec["hook"],
-                visual_direction=spec["visual"],
+                title=beat["title"],
+                purpose=beat["purpose"],
+                duration=beat["duration"],
+                narrative_question=beat["question"],
+                evidence_angle=self._shorten(beat["evidence"], limit=170),
+                retention_hook=beat["hook"],
+                visual_direction=beat["visual"],
                 earns_runtime=True,
             )
-            for index, spec in enumerate(beat_specs)
+            for beat in beat_inputs
         ]
 
         return StoryPlanRead(
-            format=self._platform_label(platform),
-            target_runtime=runtime,
-            story_arc=self._story_arc(platform=platform, topic=topic),
-            narrative_layers=layers,
+            format="Canonical story plan",
+            target_runtime="Reusable source story for Instagram, YouTube Shorts, YouTube long-form, blog, and future adapters.",
+            story_arc=(
+                f"Curiosity -> foundation -> mechanism -> evidence -> timeline -> counterpoint -> payoff for {topic}."
+            ),
+            narrative_layers=[
+                f"Core message: {self._shorten(primary_fact, limit=150)}",
+                f"Foundation: {self._shorten(foundation_fact, limit=150)}",
+                f"Mechanism/process: {self._shorten(explanation_fact, limit=150)}",
+                f"Evidence backbone: {self._shorten(statistics[0], limit=150)}",
+                f"Nuance: {self._shorten(counterpoint, limit=150)}",
+                f"Next signal: {self._shorten(trend, limit=150)}",
+            ],
             opening_hook=hook,
             retention_hooks=[
-                "But that is only half the story.",
-                "One statistic changes how this looks.",
-                "Here is where the incentives become important.",
-                "The counterargument is worth taking seriously.",
-                "Watch what changes next.",
+                beat.retention_hook
+                for beat in beats
             ],
             beats=beats,
             expansion_checks=[
@@ -590,7 +664,7 @@ class ContentGenerationService:
                 "Does it answer a meaningful question?",
                 "Does it add evidence, context, or a counterpoint?",
                 "Does it naturally lead to the next beat?",
-                "Would removing this beat make the story weaker?",
+                "Can every platform adapter reuse this beat without inventing new facts?",
             ],
             ending="Return to the opening question, state the evidence-backed takeaway, and give the viewer one next signal to watch.",
         )
@@ -600,7 +674,61 @@ class ContentGenerationService:
         *,
         topic: str,
         structured_knowledge: StructuredKnowledgeRead,
+        story_plan: StoryPlanRead | None = None,
     ) -> list[ChapterPlanRead]:
+        if story_plan and story_plan.beats:
+            chapters: list[ChapterPlanRead] = []
+            statistics = structured_knowledge.statistics or ["Use the strongest verified statistic from the cited research."]
+            citations = structured_knowledge.citations or ["Reference the cited research report for this claim."]
+            for index, beat in enumerate(story_plan.beats, start=1):
+                chapter_type = self._chapter_type(beat.title)
+                is_short_chapter = index in {1, len(story_plan.beats)}
+                chapters.append(
+                    ChapterPlanRead(
+                        title=f"Chapter {index}: {beat.title}",
+                        target_words="450-700 words" if is_short_chapter else "800-1200 words",
+                        target_minutes="3-5 minutes" if is_short_chapter else "6-8 minutes",
+                        chapter_goal=beat.purpose,
+                        learning_objectives=[
+                            "Answer the beat's narrative question before moving on.",
+                            "Explain the concept, cause, system, or implication in plain language.",
+                            "Ground the chapter in the beat's evidence angle.",
+                            "Show one limitation, uncertainty, or counterpoint where relevant.",
+                        ],
+                        question_flow=[
+                            beat.narrative_question,
+                            "What is the simplest accurate explanation?",
+                            "Which source-backed detail makes this believable?",
+                            "What visual makes the idea easy to understand?",
+                            "How does this beat hand off to the next story beat?",
+                        ],
+                        narrative_sections=self._long_form_sections_for_beat(chapter_type),
+                        evidence_requirements=[
+                            self._shorten(beat.evidence_angle, limit=170),
+                            self._shorten(statistics[(index - 1) % len(statistics)], limit=170),
+                            citations[(index - 1) % len(citations)],
+                            "Avoid adding claims that are not supported by the knowledge base.",
+                        ],
+                        visual_plan=[
+                            beat.visual_direction,
+                            "Use a source-quality badge when a claim appears.",
+                            "Use chart/map/timeline visuals when explaining data, sequence, or scale.",
+                            "Use the final visual of this chapter to set up the next beat.",
+                        ],
+                        retention_hooks=[
+                            beat.retention_hook,
+                            "End the chapter with one unresolved question that the next beat answers.",
+                            "Use a short callback to the opening curiosity before the transition.",
+                        ],
+                        transition=self._story_beat_transition(
+                            beats=story_plan.beats,
+                            index=index,
+                            platform="youtube_long",
+                        ),
+                    )
+                )
+            return chapters
+
         facts = structured_knowledge.facts or [f"Explain why {topic} matters."]
         statistics = structured_knowledge.statistics or ["Use the strongest verified statistic from the research report."]
         counterpoints = structured_knowledge.counterpoints or ["Ask what the most skeptical reader would challenge."]
@@ -711,27 +839,26 @@ class ContentGenerationService:
         platform: str,
         topic: str,
         structured_knowledge: StructuredKnowledgeRead,
+        story_plan: StoryPlanRead,
     ) -> list[ChapterPlanRead]:
         if platform == "youtube_long":
-            return self._long_form_chapter_plan(topic=topic, structured_knowledge=structured_knowledge)
+            return self._long_form_chapter_plan(
+                topic=topic,
+                structured_knowledge=structured_knowledge,
+                story_plan=story_plan,
+            )
 
-        facts = structured_knowledge.facts or [f"Explain why {topic} matters now."]
-        statistics = structured_knowledge.statistics or ["Use one source-backed proof point."]
-        counterpoints = structured_knowledge.counterpoints or ["What nuance should prevent oversimplification?"]
-        trends = structured_knowledge.trends or ["What should the audience watch next?"]
         target_words = "40-80 words" if platform == "youtube_shorts" else "25-60 words per slide/beat"
         target_minutes = "6-12 seconds" if platform == "youtube_shorts" else "1 carousel slide or 4-7 reel seconds"
-        modules = self._beat_specs(platform)
+        modules = story_plan.beats or []
         plans: list[ChapterPlanRead] = []
-        evidence_pool = [facts[0], statistics[0], counterpoints[0], trends[0]]
-        for index, module in enumerate(modules, start=1):
-            evidence = evidence_pool[(index - 1) % len(evidence_pool)]
+        for index, beat in enumerate(modules, start=1):
             plans.append(
                 ChapterPlanRead(
-                    title=f"Module {index}: {module['title']}",
+                    title=f"Module {index}: {beat.title}",
                     target_words=target_words,
                     target_minutes=target_minutes,
-                    chapter_goal=module["purpose"],
+                    chapter_goal=beat.purpose,
                     learning_objectives=[
                         "Make one clear point only.",
                         "Match the point to the platform format.",
@@ -739,7 +866,7 @@ class ContentGenerationService:
                         "Set up the next beat cleanly.",
                     ],
                     question_flow=[
-                        module["question"],
+                        beat.narrative_question,
                         "What is the shortest useful answer?",
                         "What proof or visual makes it believable?",
                         "What should the next beat resolve?",
@@ -752,23 +879,84 @@ class ContentGenerationService:
                         "Micro-transition",
                     ],
                     evidence_requirements=[
-                        self._shorten(evidence, limit=150),
+                        self._shorten(beat.evidence_angle, limit=150),
                         "Use at most one proof point in this beat.",
                         "Avoid repeating definitions from earlier beats.",
                     ],
                     visual_plan=[
-                        module["visual"],
+                        beat.visual_direction,
                         "Keep on-screen text short and readable.",
                         "Use one visual idea per beat.",
                     ],
                     retention_hooks=[
-                        module["hook"],
+                        beat.retention_hook,
                         "Create a small unresolved question.",
                     ],
-                    transition=self._platform_module_transition(platform=platform, index=index),
+                    transition=self._story_beat_transition(
+                        beats=story_plan.beats,
+                        index=index,
+                        platform=platform,
+                    ),
                 )
             )
         return plans
+
+    def _long_form_sections_for_beat(self, chapter_type: str) -> list[str]:
+        if chapter_type == "Opening":
+            return [
+                "Cold open",
+                "Central question",
+                "Why this matters",
+                "Evidence tease",
+                "Transition",
+            ]
+        if chapter_type == "History":
+            return [
+                "Starting condition",
+                "Turning points",
+                "Cause and effect",
+                "Current implication",
+                "Transition",
+            ]
+        if chapter_type == "Evidence":
+            return [
+                "Claim being tested",
+                "Source-backed proof",
+                "Interpretation",
+                "Limitation",
+                "Transition",
+            ]
+        if chapter_type == "Counterarguments":
+            return [
+                "Strongest objection",
+                "What the objection gets right",
+                "Where the objection is incomplete",
+                "Balanced conclusion",
+                "Transition",
+            ]
+        if chapter_type == "Future":
+            return [
+                "Current trajectory",
+                "Best-case scenario",
+                "Worst-case scenario",
+                "Most likely scenario",
+                "Signal to watch",
+            ]
+        if chapter_type == "Conclusion":
+            return [
+                "Return to the opening question",
+                "Evidence-backed answer",
+                "Main limitation",
+                "Memorable takeaway",
+                "CTA or next signal",
+            ]
+        return [
+            "Plain-language explanation",
+            "Mechanism or process",
+            "Concrete example",
+            "Visual explanation",
+            "Transition",
+        ]
 
     def _chapter_narration(self, *, chapter: ChapterPlanRead, topic: str) -> str:
         return (
@@ -793,6 +981,22 @@ class ContentGenerationService:
             6: "The future scenarios bring us back to the opening question.",
         }
         return transitions.get(index, "Now the story can resolve into a clear takeaway.")
+
+    def _story_beat_transition(self, *, beats: list[StoryBeatRead], index: int, platform: str) -> str:
+        if index >= len(beats):
+            if platform == "instagram":
+                return "End with a save/share reason tied to the evidence-backed payoff."
+            if platform == "youtube_shorts":
+                return "End with the payoff and invite viewers to inspect the full cited research."
+            return "Resolve the opening question and name the next signal the audience should watch."
+
+        next_beat = beats[index]
+        next_question = self._shorten(next_beat.narrative_question, limit=90)
+        if platform == "instagram":
+            return f"Swipe/watch into {next_beat.title.lower()}: {next_question}"
+        if platform == "youtube_shorts":
+            return f"Move fast into {next_beat.title.lower()}: {next_question}"
+        return f"This chapter sets up {next_beat.title.lower()}: {next_question}"
 
     def _platform_module_transition(self, *, platform: str, index: int) -> str:
         if platform == "instagram":
@@ -1291,9 +1495,11 @@ class ContentGenerationService:
         lowered = title.lower()
         if "opening" in lowered or "cold open" in lowered or "hook" in lowered:
             return "Opening"
-        if "background" in lowered or "definitions" in lowered or "context" in lowered:
+        if "foundation" in lowered or "background" in lowered or "definitions" in lowered or "context" in lowered:
             return "Background"
-        if "history" in lowered:
+        if "mechanism" in lowered or "explanation" in lowered:
+            return "Mechanism"
+        if "history" in lowered or "timeline" in lowered:
             return "History"
         if "evidence" in lowered:
             return "Evidence"
@@ -1301,6 +1507,8 @@ class ContentGenerationService:
             return "Counterarguments"
         if "future" in lowered:
             return "Future"
+        if "payoff" in lowered or "takeaway" in lowered:
+            return "Conclusion"
         return "Conclusion"
 
     def _platform_memory_tone(self, platform: str) -> str:
@@ -1340,6 +1548,7 @@ class ContentGenerationService:
         tones = {
             "Opening": "Maximize curiosity and create an unanswered question.",
             "Background": "Teach concepts clearly and patiently.",
+            "Mechanism": "Explain the process, cause, system, or incentive chain step by step.",
             "History": "Use chronological storytelling and cause-and-effect.",
             "Evidence": "Slow down around data, sources, and interpretation.",
             "Counterarguments": "Sound balanced, fair, and intellectually honest.",
@@ -1352,6 +1561,7 @@ class ContentGenerationService:
         analogies = {
             "Opening": f"Think of {topic} like a locked room: the headline is the door, but the evidence is the key.",
             "Background": f"Think of {topic} like a map: without the legend, even accurate details are hard to read.",
+            "Mechanism": f"Think of {topic} like a machine with visible outputs and hidden moving parts.",
             "History": f"Think of {topic} like a trail of footprints; every step matters because it narrows the possible path.",
             "Evidence": f"Think of the data around {topic} like a dashboard; one number is useful, but the pattern matters more.",
             "Counterarguments": f"Think of the opposing view like a stress test for {topic}; it shows where the argument bends.",
@@ -1364,6 +1574,7 @@ class ContentGenerationService:
         misconceptions = {
             "Opening": "the first headline explains the whole story",
             "Background": "definitions are obvious and do not need careful teaching",
+            "Mechanism": "the visible outcome is the same thing as the underlying cause",
             "History": "the current situation appeared suddenly",
             "Evidence": "one statistic can settle the entire question",
             "Counterarguments": "balance means giving every claim equal weight",
@@ -1502,6 +1713,33 @@ class ContentGenerationService:
             "Conclusion scene: clean text card with the main takeaway and CTA.",
         ]
 
+    def _retention_hook_from_text(self, value: str, *, fallback: str) -> str:
+        clean_value = self._shorten(value, limit=95)
+        if not clean_value:
+            return fallback
+        if clean_value.endswith("?"):
+            return clean_value
+        if re.search(r"\b\d+(?:\.\d+)?\b", clean_value):
+            return f"Pause on the number: {clean_value}"
+        if any(term in clean_value.lower() for term in {"risk", "challenge", "however", "but", "counter"}):
+            return f"But the caveat matters: {clean_value}"
+        return f"Hold the answer until this clue lands: {clean_value}"
+
+    def _visual_from_evidence(self, *, topic: str, evidence: str, fallback: str) -> str:
+        clean_evidence = self._shorten(evidence, limit=120)
+        if not clean_evidence:
+            return fallback
+        lowered = clean_evidence.lower()
+        if re.search(r"\b\d+(?:\.\d+)?\s?(?:%|percent|million|billion|crore|lakh|x)\b", clean_evidence, re.IGNORECASE):
+            return f"Chart/source card visualizing: {clean_evidence}"
+        if re.search(r"\b(?:19|20)\d{2}\b", clean_evidence):
+            return f"Timeline visual showing how this point developed: {clean_evidence}"
+        if any(term in lowered for term in {"country", "global", "world", "region", "city", "state"}):
+            return f"Map or comparison card for {topic}: {clean_evidence}"
+        if any(term in lowered for term in {"risk", "challenge", "however", "but", "counter"}):
+            return f"Split-screen caveat visual: {clean_evidence}"
+        return f"Plain-language explainer visual for {topic}: {clean_evidence}"
+
     def _platform_prompt_rules(self, platform: str) -> str:
         if platform == "instagram":
             return (
@@ -1619,6 +1857,14 @@ class ContentGenerationService:
             chapters.append(f"{minute:02d}:00 {self._shorten(point, limit=44)}")
         chapters.append("12:00 Conclusion and next signals")
         return chapters
+
+    def _chapters_from_story_plan(self, *, story_plan: StoryPlanRead) -> list[str]:
+        chapters = ["00:00 Opening hook"]
+        for index, beat in enumerate(story_plan.beats, start=1):
+            minute = max(index * 3 - 2, 1)
+            chapters.append(f"{minute:02d}:00 {self._shorten(beat.title, limit=44)}")
+        chapters.append(f"{max(len(story_plan.beats) * 3, 12):02d}:00 Conclusion and next signal")
+        return list(dict.fromkeys(chapters))
 
     def _b_roll(self, topic: str) -> list[str]:
         return [
